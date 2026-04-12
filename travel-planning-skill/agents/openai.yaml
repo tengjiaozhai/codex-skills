@@ -1,0 +1,4 @@
+interface:
+  display_name: "旅行规划Skill"
+  short_description: "带真实价格核验、门票酒店交通预算与路线编排的旅行规划技能"
+  default_prompt: "Use $travel-planning-skill to plan a trip with verified prices, transport, hotels, tickets, and source-backed budgeting."

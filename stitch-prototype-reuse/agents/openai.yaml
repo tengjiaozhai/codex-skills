@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stitch Prototype Reuse"
+  short_description: "Reconstruct pages from Stitch html/md/png triplet files"
+  default_prompt: "Use $stitch-prototype-reuse to reconstruct code.html from DESIGN.md and screen.png with high visual fidelity."

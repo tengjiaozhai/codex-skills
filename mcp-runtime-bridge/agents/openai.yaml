@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCP Runtime Bridge"
+  short_description: "Fix MCP startup issues with nvm and Conda"
+  default_prompt: "Use $mcp-runtime-bridge to diagnose and stabilize MCP server commands in Codex."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Resume DOCX"
+  short_description: "Generate and optimize Word resumes"
+  default_prompt: "Use $resume-docx to draft, improve, or rewrite a resume and export it as a .docx file."

@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "cookies": [
+    {
+      "name": "BIGipServerotn",
+      "value": "1306067210.64545.0000",
+      "domain": "kyfw.12306.cn",
+      "path": "/",
+      "secure": false,
+      "expires": null,
+      "rest": {}
+    },
+    {
+      "name": "BIGipServerpassport",
+      "value": "803733770.50215.0000",
+      "domain": "kyfw.12306.cn",
+      "path": "/",
+      "secure": false,
+      "expires": null,
+      "rest": {}
+    },
+    {
+      "name": "route",
+      "value": "495c805987d0f5c8c84b14f60212447d",
+      "domain": "kyfw.12306.cn",
+      "path": "/",
+      "secure": false,
+      "expires": null,
+      "rest": {}
+    },
+    {
+      "name": "uKey",
+      "value": "2ae1d10df1ee03a3eaa23834a84744351198463910f01d2910f52eccc43f7f6d",
+      "domain": "kyfw.12306.cn",
+      "path": "/",
+      "secure": false,
+      "expires": null,
+      "rest": {}
+    },
+    {
+      "name": "JSESSIONID",
+      "value": "07A4ECEF5D384D6A1127A1830488A8BA",
+      "domain": "kyfw.12306.cn",
+      "path": "/otn",
+      "secure": false,
+      "expires": null,
+      "rest": {}
+    },
+    {
+      "name": "tk",
+      "value": "6BO5BevDWQoGi0nVN3dwJRboWfVGSQjDtpe8GiV4t0IsdS1S0",
+      "domain": "kyfw.12306.cn",
+      "path": "/otn",
+      "secure": false,
+      "expires": null,
+      "rest": {}
+    },
+    {
+      "name": "_passport_session",
+      "value": "3e0295ec4ed040dcb9579b1f1650265c4864",
+      "domain": "kyfw.12306.cn",
+      "path": "/passport",
+      "secure": false,
+      "expires": null,
+      "rest": {}
+    },
+    {
+      "name": "uamtk",
+      "value": "5ecnQsBFHe8i9_9cmLXxAmv6NsTKpz_oWTWlYhLDTuYkoS1S0",
+      "domain": "kyfw.12306.cn",
+      "path": "/passport",
+      "secure": false,
+      "expires": null,
+      "rest": {
+        "HttpOnly": null
+      }
+    }
+  ]
+}

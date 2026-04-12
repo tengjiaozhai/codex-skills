@@ -1,0 +1,81 @@
+{
+  "name": "Alex Chen",
+  "title": "Senior Backend Engineer",
+  "location": "Shanghai, China",
+  "email": "alex.chen@example.com",
+  "phone": "+86 138-0000-0000",
+  "linkedin": "linkedin.com/in/alexchen",
+  "github": "github.com/alexchen",
+  "summary": [
+    "Backend engineer with 8 years of experience in payments, data platforms, and internal tooling.",
+    "Strengths in Python, Go, system design, and turning ambiguous requirements into reliable services."
+  ],
+  "sections": [
+    {
+      "heading": "Experience",
+      "items": [
+        {
+          "title": "Senior Backend Engineer",
+          "company": "Acme Payments",
+          "location": "Shanghai",
+          "date": "2022 - Present",
+          "bullets": [
+            "Led the redesign of the settlement pipeline, cutting reconciliation latency by 42% across three payment products.",
+            "Built internal risk-review tooling used by operations and compliance teams, reducing manual review time by 60%."
+          ]
+        },
+        {
+          "title": "Backend Engineer",
+          "company": "Northstar Data",
+          "location": "Hangzhou",
+          "date": "2019 - 2022",
+          "bullets": [
+            "Implemented event-driven ingestion services in Python and Kafka, supporting 10M+ records per day.",
+            "Improved observability and on-call readiness with tracing and alerting, lowering Sev-2 incidents by 30%."
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "Projects",
+      "items": [
+        {
+          "title": "Resume Optimization Agent",
+          "subtitle": "Personal project",
+          "date": "2026",
+          "bullets": [
+            "Built a Python workflow that extracts resume text from .docx files, rewrites weak bullets, and exports polished Word output.",
+            "Designed structured JSON input to separate content editing from document formatting."
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "Education",
+      "items": [
+        {
+          "title": "B.Eng. in Software Engineering",
+          "company": "Zhejiang University",
+          "date": "2011 - 2015"
+        }
+      ]
+    },
+    {
+      "heading": "Skills",
+      "items": [
+        {
+          "label": "Languages",
+          "value": "Python, Go, SQL, TypeScript"
+        },
+        {
+          "label": "Platforms",
+          "value": "PostgreSQL, Redis, Kafka, Docker, Kubernetes"
+        },
+        {
+          "label": "Practices",
+          "value": "System design, observability, CI/CD, performance tuning"
+        }
+      ]
+    }
+  ]
+}
