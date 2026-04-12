@@ -1,0 +1,7 @@
+interface:
+  display_name: "Self Improving Agent"
+  short_description: "把错误、修正、复盘与最佳实践沉淀成可复用长期知识"
+  default_prompt: "Use $self-improving-agent to log a durable learning, review recurring issues in .learnings, and promote stable rules into AGENTS.md or memory.md."
+
+policy:
+  allow_implicit_invocation: true
