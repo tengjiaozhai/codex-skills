@@ -1,0 +1,17 @@
+{
+  "name": "china-rental-price",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "China domestic rental car reference price skill — cross-platform (macOS + Windows).",
+  "scripts": {
+    "login:onehai": "node src/login-onehai.js",
+    "import:onehai:chrome": "node src/import-onehai-session.js",
+    "query:onehai:chrome-live": "node src/query-onehai-live-chrome.js",
+    "search": "node src/cli.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}
