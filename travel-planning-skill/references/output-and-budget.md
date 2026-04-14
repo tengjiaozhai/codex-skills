@@ -59,6 +59,8 @@ Default structure:
 - budget
 - sources
 
+Prefer the standardized spec-and-render workflow from `travel-handbook-generator` when the handbook should be reusable across cities or regenerated later. Use `doc` for the final visual QA pass.
+
 ## Budget Structure
 
 Split costs into layers.
@@ -101,6 +103,7 @@ Do not mix them.
 If generating a document:
 
 - keep all dates absolute
+- prefer one reusable JSON spec per trip over one-off city scripts
 - insert local images instead of hotlinking them in the document
 - keep prices source-backed
 - state the query date

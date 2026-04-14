@@ -12,6 +12,7 @@ Choose the minimum set of installed travel skills needed for the task.
 | Hotel detail cross-check, tags, room pricing | `rollinggo-searchhotel` |
 | Any route choice or local movement | `didi-ride-skill` |
 | Rental-car live reference pricing in China | `china-rental-price` |
+| Reusable travel handbook template and standardized trip rendering | `travel-handbook-generator` |
 | DOCX/PDF export | `doc` |
 
 ## Transport Comparison Rules

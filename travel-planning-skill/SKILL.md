@@ -93,7 +93,8 @@ Default routing:
 - hotel cross-checks and room details: `rollinggo-searchhotel`
 - local route choice, walking/bus/metro/taxi comparison, or any “怎么走/多少钱”: `didi-ride-skill`
 - rental-car reference pricing in China: `china-rental-price`
-- DOCX/PDF export: `doc`
+- standardized handbook spec + DOCX/PDF travel handbook generation: `travel-handbook-generator`
+- DOCX/PDF export verification and layout review: `doc`
 
 ### 4. Design local mobility like a real traveler would
 
@@ -121,6 +122,7 @@ Common deliverables:
 - DOCX/PDF travel handbook
 
 If the user asks to save, export, archive, or keep the plan, use the `doc` skill and produce a real file instead of only chat text.
+If the ask is for a reusable handbook template or repeatable handbook generation workflow, use `travel-handbook-generator` first, then use `doc` for final layout checks.
 
 ## Output Expectations
 

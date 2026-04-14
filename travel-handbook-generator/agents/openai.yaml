@@ -1,0 +1,4 @@
+interface:
+  display_name: "Travel Handbook Generator"
+  short_description: "Generate reusable DOCX/PDF trip handbooks"
+  default_prompt: "Use $travel-handbook-generator to turn this verified itinerary into a reusable handbook."

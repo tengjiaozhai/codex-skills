@@ -1,0 +1,123 @@
+{
+  "meta": {
+    "slug": "replace-me",
+    "title": "城市图文旅行手册",
+    "subtitle": "YYYY年M月D日 - YYYY年M月D日 | X天X夜 | 主题路线",
+    "query_date": "2026-04-13",
+    "output_dir": "/Users/shenmingjie/Documents/skills/output/doc",
+    "docx_filename": "城市图文旅行手册.docx",
+    "pdf_filename": "城市图文旅行手册.pdf"
+  },
+  "theme": {},
+  "cover": {
+    "tagline": "把查价、路线、住宿和来源整理成一份可留档的图文手册。",
+    "hero_keys": [
+      "day1",
+      "day2",
+      "day3"
+    ]
+  },
+  "overview": {
+    "intro": "先写一句这趟路线为什么这样排。",
+    "summary": "写一句总路线总结。",
+    "image_caption": "路线总览图会自动根据 route_cards 生成。",
+    "route_cards": [
+      {
+        "day": "D1",
+        "date": "5月1日",
+        "city": "城市A",
+        "detail": "景点A + 夜景"
+      }
+    ],
+    "summary_boxes": [
+      {
+        "title": "推荐结论",
+        "lines": [
+          "先写最推荐的走法。",
+          "再写为什么它更稳。"
+        ],
+        "fill": "blue"
+      }
+    ]
+  },
+  "images": {
+    "day1": {
+      "title": "景点A",
+      "image": "https://example.com/day1.jpg",
+      "page": "https://example.com/day1",
+      "caption": "写一句这个景点为什么值得放进这一天。"
+    }
+  },
+  "hotels": {
+    "main_hotel": {
+      "title": "酒店名称",
+      "price": "¥0",
+      "note": "写清楚为什么选它。",
+      "page": "https://example.com/hotel",
+      "image": "https://example.com/hotel.jpg"
+    }
+  },
+  "days": [
+    {
+      "title": "D1 | 日期 | 城市/景点",
+      "subtitle": "一句话说明这一天的节奏。",
+      "image_key": "day1",
+      "timeline": [
+        [
+          "上午",
+          "先写出发行程。"
+        ],
+        [
+          "下午",
+          "再写主景点和转场。"
+        ]
+      ],
+      "summary_boxes": [
+        {
+          "title": "当天门票",
+          "lines": [
+            "把主要门票或免费口径写清楚。"
+          ],
+          "fill": "gold"
+        }
+      ],
+      "hotel_card": {
+        "card_title": "今晚住哪里",
+        "hotel_key": "main_hotel"
+      }
+    }
+  ],
+  "budget": {
+    "title": "预算页 | 两人总价",
+    "items": [
+      [
+        "交通",
+        "往返高铁",
+        "¥0"
+      ]
+    ],
+    "total": "¥0",
+    "note": "（把预算口径写清楚）",
+    "reference_title": "参考项",
+    "reference_items": [
+      [
+        "升级参考",
+        "更舒适但更贵的选项",
+        "¥0"
+      ]
+    ],
+    "exclusions_title": "未纳入总价",
+    "exclusions": [
+      "餐食",
+      "临时加点",
+      "动态升级项目"
+    ]
+  },
+  "sources": [
+    [
+      "火车",
+      "来源说明",
+      "https://example.com"
+    ]
+  ]
+}
