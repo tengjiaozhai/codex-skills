@@ -106,7 +106,11 @@ def _run_compare(
             sys.exit(1)
 
         print("\n--- 正在执行对比算法 ---")
-        results = csv_diff.compare_all_dsn_csvs(p1, p2, i1, i2, n1, n2)
+        prefs = csv_diff.build_default_compare_prefs(p1, p2, i1, i2, n1, n2)
+        results, err = csv_diff.compare_all_dsn_csvs_from_prefs(prefs)
+        if err:
+            print(f"❌ 对比失败: {err}")
+            sys.exit(1)
 
     print(f"\n--- 对比完成，共发现 {len(results)} 处差异 ---\n")
 
@@ -120,6 +124,18 @@ def _run_compare(
             "oldPath": str(path1),
             "newPath": str(path2),
             "mode": mode,
+            "selectedProps": [
+                "Description",
+                "ISNC",
+                "PCB Footprint",
+                "Part Number",
+                "Power",
+                "Tolerance",
+                "Value",
+                "Vendor",
+                "Vendor_PN",
+                "Voltage",
+            ],
         }
         suffix = output.suffix.lower()
         if suffix == ".xlsx":

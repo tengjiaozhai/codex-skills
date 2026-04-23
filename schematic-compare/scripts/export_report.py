@@ -1,193 +1,331 @@
-"""
-对比报告导出模块。
-支持 Excel (.xlsx) 和 Markdown (.md) 两种输出格式。
-
-Excel 依赖 openpyxl（可选）；Markdown 为纯文本，零依赖。
-"""
-
 from __future__ import annotations
 
-import csv
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .diff_types import (
+    ADD,
+    COMPONENT_PROP,
+    DELETE,
+    NET_CONNECTION,
+    NET_RENAME,
+    PIN_INFO,
+    PROPERTY_STYLE_TYPES,
+    RENUMBER_REFDES,
+)
 from .models import DiffRow, merge_property_change_rows_for_display
-from .diff_types import ADD, DELETE, NET_CONNECTION, NET_RENAME, RENUMBER_REFDES
 
+_COMPARE_HEADERS: tuple[str, ...] = (
+    "差异类型",
+    "类别",
+    "DSN 1",
+    "DSN 2",
+    "旧值",
+    "新值",
+    "页面",
+    "修改详情",
+    "风险等级",
+    "差异说明",
+)
 
-# ============================================================
-# 风险等级与颜色编码
-# ============================================================
-
-_RISK_MAP = {
-    DELETE: ("高", "🔴"),
-    NET_CONNECTION: ("高", "🔴"),
-    ADD: ("中", "🟡"),
-    "器件属性": ("中", "🟡"),
-    "管脚属性": ("中", "🟡"),
-    NET_RENAME: ("低", "🟢"),
-    RENUMBER_REFDES: ("低", "🟢"),
+_RISK_NOTE_MAP: dict[tuple[str, str], tuple[str, str]] = {
+    ("器件", ADD): ("中", "新增器件，需核对功能"),
+    ("器件", DELETE): ("中", "移除器件，需确认影响"),
+    ("器件", RENUMBER_REFDES): ("低", "仅位号调整，属性不变"),
+    ("器件", COMPONENT_PROP): ("中", "器件属性变更，请核对"),
+    ("管脚", ADD): ("低", "新增管脚，请检查"),
+    ("管脚", DELETE): ("低", "移除管脚，需确认"),
+    ("管脚", RENUMBER_REFDES): ("低", "仅位号调整，无功能影响"),
+    ("管脚", PIN_INFO): ("中", "管脚属性变更，请核对"),
+    ("网络", ADD): ("中", "新增网络，需核对确认"),
+    ("网络", DELETE): ("中", "移除网络，需核对确认"),
+    ("网络", NET_RENAME): ("中", "网络重命名，请检查是否有掉网络"),
+    ("网络", NET_CONNECTION): ("中", "连接变更，需核对确认"),
 }
 
 
-def risk_level(row: DiffRow) -> str:
-    """返回差异行的风险等级文字。"""
-    info = _RISK_MAP.get(row.change_type, ("中", "🟡"))
-    return info[0]
+def _meta_full_path(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        return str(Path(text).expanduser().resolve())
+    except OSError:
+        return text
 
 
-def risk_emoji(row: DiffRow) -> str:
-    info = _RISK_MAP.get(row.change_type, ("中", "🟡"))
-    return info[1]
+def _meta_file_name(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        return Path(text).name
+    except (OSError, ValueError):
+        return ""
 
 
-# ============================================================
-# Markdown 报告导出
-# ============================================================
+def _append_dsn_meta(info: Any, old_path: str, new_path: str) -> None:
+    info.append(("DSN 1 路径", _meta_full_path(old_path)))
+    info.append(("DSN 1 文件名", _meta_file_name(old_path)))
+    info.append(("DSN 2 路径", _meta_full_path(new_path)))
+    info.append(("DSN 2 文件名", _meta_file_name(new_path)))
+
+
+def _format_compare_table_cell(text: str | None) -> str:
+    value = "" if text is None else str(text)
+    if not value:
+        return ""
+    value = value.replace(" | ", " ; ")
+    if value.strip() == "-":
+        return " "
+    parts = value.split(" ; ")
+    out: list[str] = []
+    for part in parts:
+        stripped = part.strip()
+        if stripped == "-":
+            out.append(" ")
+            continue
+        if stripped.endswith("：-"):
+            out.append(stripped[:-1] + " ")
+            continue
+        if stripped.endswith(":-"):
+            out.append(stripped[:-1] + " ")
+            continue
+        out.append(part)
+    return " ; ".join(out)
+
+
+def _split_object_id(row: DiffRow) -> tuple[str, list[str]]:
+    object_id = (row.object_id or "").strip()
+    for prefix, kind in (("[Parts] ", "parts"), ("[Pins] ", "pins"), ("[Nets] ", "nets")):
+        if object_id.startswith(prefix):
+            rest = object_id[len(prefix) :].strip()
+            return kind, [part.strip() for part in rest.split("|")]
+    return "", [object_id]
+
+
+def _dsn_pair(row: DiffRow) -> tuple[str, str]:
+    kind, parts = _split_object_id(row)
+    if row.change_type == RENUMBER_REFDES:
+        meta = row.meta or {}
+        return str(meta.get("oldRefdes") or "").strip() or "-", str(meta.get("newRefdes") or "").strip() or "-"
+    if row.change_type == ADD:
+        if kind == "pins":
+            return "-", ".".join(parts[:2]).strip(".") or "-"
+        return "-", parts[0] if parts and parts[0] else "-"
+    if row.change_type == DELETE:
+        if kind == "pins":
+            return ".".join(parts[:2]).strip(".") or "-", "-"
+        return parts[0] if parts and parts[0] else "-", "-"
+    if row.change_type == NET_CONNECTION:
+        return parts[0] if parts and parts[0] else "-", parts[0] if parts and parts[0] else "-"
+    if kind == "pins":
+        disp = ".".join(parts[:2]).strip(".")
+        return disp or "-", disp or "-"
+    if parts and parts[0]:
+        return parts[0], parts[0]
+    return "-", "-"
+
+
+def _page_display(row: DiffRow) -> str:
+    meta = row.meta or {}
+    left = "/".join(
+        part
+        for part in (
+            str(meta.get("schematicNameDsn1") or "").strip(),
+            str(meta.get("pageNameDsn1") or "").strip(),
+        )
+        if part
+    )
+    right = "/".join(
+        part
+        for part in (
+            str(meta.get("schematicNameDsn2") or "").strip(),
+            str(meta.get("pageNameDsn2") or "").strip(),
+        )
+        if part
+    )
+    if not left and not right:
+        return ""
+    return _format_compare_table_cell(f"{left} | {right}")
+
+
+def _risk_level(row: DiffRow) -> str:
+    return _RISK_NOTE_MAP.get((row.category, row.change_type), ("中", ""))[0]
+
+
+def _diff_note(row: DiffRow) -> str:
+    return _RISK_NOTE_MAP.get((row.category, row.change_type), ("中", ""))[1]
+
+
+def _value_label(category: str, prop_name: str | None) -> str:
+    text = (prop_name or "").strip()
+    cf = text.casefold()
+    if category == "管脚":
+        if "pin" in cf and "name" in cf:
+            return "脚名"
+        if "net" in cf or "signal" in cf:
+            return "网名"
+    if category == "网络" and "pin" in cf:
+        return "Pins"
+    return text
+
+
+def _tokenize_pin_list(text: str) -> list[str]:
+    return [part.strip() for part in str(text or "").split(",") if part.strip()]
+
+
+def _fold_common_pins_to_com(old_value: str, new_value: str) -> tuple[str, str]:
+    old_tokens = _tokenize_pin_list(old_value)
+    new_tokens = _tokenize_pin_list(new_value)
+    old_map = {token.casefold(): token for token in old_tokens}
+    new_map = {token.casefold(): token for token in new_tokens}
+    if max(len(old_map), len(new_map)) <= 6:
+        return old_value, new_value
+    common = set(old_map) & set(new_map)
+    only_old = [old_map[key] for key in sorted(set(old_map) - common, key=str.lower)]
+    only_new = [new_map[key] for key in sorted(set(new_map) - common, key=str.lower)]
+
+    def render(tokens: list[str]) -> str:
+        out = list(tokens)
+        if common:
+            out.append("COM")
+        return ", ".join(out)
+
+    return render(only_old), render(only_new)
+
+
+def _old_new_values(row: DiffRow) -> tuple[str, str]:
+    old_value = str(row.old_value or "")
+    new_value = str(row.new_value or "")
+    if row.change_type == NET_RENAME and row.category == "网络":
+        label = _value_label(row.category, row.prop_name or "Pins (Page)")
+        old_text = _format_compare_table_cell(f"{label}：{old_value if old_value else ' '}")
+        new_text = _format_compare_table_cell(f"{label}：{new_value if new_value else ' '}")
+        return old_text or " ", new_text or " "
+    if row.change_type == NET_CONNECTION and row.category == "网络":
+        label = _value_label(row.category, row.prop_name)
+        old_value, new_value = _fold_common_pins_to_com(old_value, new_value)
+        old_text = _format_compare_table_cell(f"{label}：{old_value if old_value else ' '}")
+        new_text = _format_compare_table_cell(f"{label}：{new_value if new_value else ' '}")
+        return old_text or " ", new_text or " "
+    if row.category in ("管脚", "网络") and row.change_type in PROPERTY_STYLE_TYPES and row.prop_name:
+        label = _value_label(row.category, row.prop_name)
+        old_text = _format_compare_table_cell(f"{label}：{old_value if old_value else ' '}")
+        new_text = _format_compare_table_cell(f"{label}：{new_value if new_value else ' '}")
+        return old_text or " ", new_text or " "
+    old_text = _format_compare_table_cell(old_value)
+    new_text = _format_compare_table_cell(new_value)
+    return old_text or " ", new_text or " "
+
+
+def _detail_display(row: DiffRow) -> str:
+    return _format_compare_table_cell(str(row.detail or ""))
+
 
 def export_markdown(
     path: str | Path,
     rows: list[DiffRow],
     meta: dict[str, Any] | None = None,
 ) -> None:
-    """
-    导出 Markdown 格式的对比报告。
-
-    参数：
-        path: 输出文件路径
-        rows: DiffRow 列表
-        meta: 元数据字典（可选，含 oldPath/newPath 等）
-    """
-    p = Path(path)
+    output = Path(path)
     meta = meta or {}
-    merged = merge_property_change_rows_for_display(rows)
-    sorted_rows = sorted(merged, key=lambda r: (r.category, r.change_type, r.object_id))
+    merged_rows = merge_property_change_rows_for_display(rows)
 
-    lines: list[str] = []
-    lines.append("# 原理图对比报告\n")
-    lines.append(f"**生成时间**：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-
+    lines = [
+        "# 原理图对比报告",
+        "",
+        f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+    ]
     if meta.get("oldPath"):
-        lines.append(f"**旧版本 (DSN1)**：`{meta['oldPath']}`\n")
+        lines.append(f"DSN 1：`{meta['oldPath']}`")
     if meta.get("newPath"):
-        lines.append(f"**新版本 (DSN2)**：`{meta['newPath']}`\n")
-
-    # 统计摘要
-    by_type: dict[str, int] = {}
-    for r in sorted_rows:
-        by_type[r.change_type] = by_type.get(r.change_type, 0) + 1
-
-    lines.append(f"\n## 摘要（共 {len(sorted_rows)} 处差异）\n")
-    lines.append("| 差异类型 | 数量 | 风险 |")
-    lines.append("|---------|------|------|")
-    for ct, count in sorted(by_type.items()):
-        risk_info = _RISK_MAP.get(ct, ("中", "🟡"))
-        lines.append(f"| {ct} | {count} | {risk_info[1]} {risk_info[0]} |")
-
-    # 详细表格
-    lines.append("\n## 详细差异列表\n")
-    lines.append("| # | 类别 | 差异类型 | 对象 | 修改详情 | 旧值 | 新值 | 风险 |")
-    lines.append("|---|------|---------|------|---------|------|------|------|")
-    for idx, r in enumerate(sorted_rows, start=1):
-        ov = (r.old_value or "-").replace("|", "\\|")
-        nv = (r.new_value or "-").replace("|", "\\|")
-        detail = (r.detail or "").replace("|", "\\|")
-        obj = (r.object_id or "").replace("|", "\\|")
-        ri = _RISK_MAP.get(r.change_type, ("中", "🟡"))
+        lines.append(f"DSN 2：`{meta['newPath']}`")
+    lines.append("")
+    lines.append(f"差异总数：{len(merged_rows)}")
+    lines.append("")
+    lines.append("| 差异类型 | 类别 | DSN 1 | DSN 2 | 旧值 | 新值 | 页面 | 修改详情 | 风险等级 | 差异说明 |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    for row in merged_rows:
+        dsn1, dsn2 = _dsn_pair(row)
+        old_value, new_value = _old_new_values(row)
         lines.append(
-            f"| {idx} | {r.category} | {r.change_type} | {obj} | {detail} | {ov} | {nv} | {ri[1]} |"
+            "| "
+            + " | ".join(
+                (
+                    row.change_type,
+                    row.category,
+                    dsn1,
+                    dsn2,
+                    old_value,
+                    new_value,
+                    _page_display(row),
+                    _detail_display(row),
+                    _risk_level(row),
+                    _diff_note(row),
+                )
+            )
+            + " |"
         )
+    output.write_text("\n".join(lines), encoding="utf-8")
 
-    p.write_text("\n".join(lines), encoding="utf-8")
-
-
-# ============================================================
-# Excel 报告导出
-# ============================================================
 
 def export_excel(
     path: str | Path,
     rows: list[DiffRow],
     meta: dict[str, Any] | None = None,
 ) -> None:
-    """
-    导出 Excel 格式的对比报告（需要 openpyxl）。
-
-    参数：
-        path: 输出文件路径 (.xlsx)
-        rows: DiffRow 列表
-        meta: 元数据字典（可选）
-    """
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
         from openpyxl.utils import get_column_letter
-    except ImportError:
-        raise ImportError(
-            "Excel 导出需要 openpyxl 库。请执行：pip install openpyxl"
-        )
+    except ImportError as exc:
+        raise ImportError("Excel 导出需要 openpyxl 库。请执行：pip install openpyxl") from exc
 
-    p = Path(path)
+    output = Path(path)
     meta = meta or {}
-    wb = Workbook()
-    ws = wb.active
-    assert ws is not None
-    ws.title = "对比结果"
+    merged_rows = merge_property_change_rows_for_display(rows)
 
-    merged = merge_property_change_rows_for_display(rows)
-    sorted_rows = sorted(merged, key=lambda r: (r.category, r.change_type, r.object_id))
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = "对比结果"
 
-    # 表头
-    headers = ("序号", "分类", "差异类型", "对象标识", "旧值", "新值", "修改详情", "风险等级")
     header_fill = PatternFill("solid", fgColor="D4D0C8")
     header_font = Font(bold=True)
-    for col, h in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col, value=h)
+    for col, header in enumerate(_COMPARE_HEADERS, start=1):
+        cell = sheet.cell(row=1, column=col, value=header)
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-    # 风险等级背景色映射
-    risk_fills = {
-        "高": PatternFill("solid", fgColor="FFEBEE"),
-        "中": PatternFill("solid", fgColor="FFF8E1"),
-        "低": PatternFill("solid", fgColor="E3F2FD"),
-    }
-
-    # 数据行
-    for idx, r in enumerate(sorted_rows, start=1):
-        row_num = idx + 1
-        rl = risk_level(r)
-        ws.cell(row=row_num, column=1, value=idx)
-        ws.cell(row=row_num, column=2, value=r.category)
-        ws.cell(row=row_num, column=3, value=r.change_type)
-        ws.cell(row=row_num, column=4, value=r.object_id or "")
-        ws.cell(row=row_num, column=5, value=r.old_value or "-")
-        ws.cell(row=row_num, column=6, value=r.new_value or "-")
-        ws.cell(row=row_num, column=7, value=r.detail or "")
-        ws.cell(row=row_num, column=8, value=rl)
-        fill = risk_fills.get(rl)
-        for c in range(1, 9):
-            cell = ws.cell(row=row_num, column=c)
+    for row_index, row in enumerate(merged_rows, start=2):
+        dsn1, dsn2 = _dsn_pair(row)
+        old_value, new_value = _old_new_values(row)
+        values = (
+            row.change_type,
+            row.category,
+            _format_compare_table_cell(dsn1),
+            _format_compare_table_cell(dsn2),
+            old_value,
+            new_value,
+            _page_display(row),
+            _detail_display(row),
+            _risk_level(row),
+            _diff_note(row),
+        )
+        for col, value in enumerate(values, start=1):
+            cell = sheet.cell(row=row_index, column=col, value=value)
             cell.alignment = Alignment(vertical="top", wrap_text=True)
-            if fill:
-                cell.fill = fill
 
-    # 列宽
-    widths = (6, 8, 12, 28, 40, 40, 44, 8)
-    for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+    widths = (12, 10, 22, 22, 44, 44, 20, 40, 8, 22)
+    for idx, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(idx)].width = width
 
-    # 元数据工作表
-    info = wb.create_sheet("元数据")
+    info = workbook.create_sheet("元数据")
     info.append(("导出时间", datetime.now().isoformat(timespec="seconds")))
-    if meta.get("oldPath"):
-        info.append(("旧版本路径", str(meta["oldPath"])))
-    if meta.get("newPath"):
-        info.append(("新版本路径", str(meta["newPath"])))
-    if meta.get("mode"):
-        info.append(("对比模式", str(meta["mode"])))
-    info.append(("差异总数", str(len(sorted_rows))))
+    _append_dsn_meta(info, str(meta.get("oldPath", "")), str(meta.get("newPath", "")))
+    info.append(("对比属性", ", ".join(meta.get("selectedProps", []))))
 
-    wb.save(p)
+    workbook.save(output)
