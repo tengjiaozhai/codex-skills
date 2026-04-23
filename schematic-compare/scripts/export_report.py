@@ -221,7 +221,16 @@ def _old_new_values(row: DiffRow) -> tuple[str, str]:
 
 
 def _detail_display(row: DiffRow) -> str:
-    return _format_compare_table_cell(str(row.detail or ""))
+    raw = str(row.detail or "")
+    if row.change_type == NET_CONNECTION and row.category == "网络":
+        from .csv_diff import _nets_pins_connection_detail_cn
+
+        old_value, new_value = _fold_common_pins_to_com(
+            str(row.old_value or ""), str(row.new_value or "")
+        )
+        detail = _nets_pins_connection_detail_cn(old_value, new_value)
+        return _format_compare_table_cell(detail)
+    return _format_compare_table_cell(raw)
 
 
 def export_markdown(

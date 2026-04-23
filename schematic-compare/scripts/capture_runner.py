@@ -1,10 +1,3 @@
-"""
-Capture 子进程管理模块。
-负责环境检测、capture.exe 路径解析、Tcl 脚本执行。
-
-⚠️ 仅 Windows 系统可用。非 Windows 调用 check_capture_environment() 会立即报错。
-"""
-
 from __future__ import annotations
 
 import os
@@ -13,68 +6,65 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 
 def check_capture_environment() -> None:
-    """
-    检查当前环境是否支持 DSN 模式。
-    非 Windows 系统或未安装 OrCAD Capture 时抛出 RuntimeError。
-    """
     if sys.platform != "win32":
         raise RuntimeError(
             "DSN 对比模式仅支持 Windows 系统。\n"
             f"当前系统: {sys.platform}\n"
-            "请使用以下替代方案：\n"
-            "  1. EDIF 模式：在 Windows 端将 DSN 导出为 EDIF 网表，然后跨平台对比\n"
-            "  2. CSV 模式：在 Windows 端通过 Tcl 脚本导出 CSV，然后跨平台对比"
+            "请改用 EDIF 或 CSV 模式。"
         )
 
 
+def _win_subprocess_kwargs(*, show_console: bool) -> dict[str, Any]:
+    if sys.platform != "win32":
+        return {}
+    kwargs: dict[str, Any] = {}
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = 1 if show_console else subprocess.SW_HIDE
+    kwargs["startupinfo"] = startup
+    if not show_console and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+    return kwargs
+
+
 def resolve_capture_exe(prefs: dict | None = None) -> Path | None:
-    """
-    按优先级查找 capture.exe：
-    1. 环境变量 SCHCOMPARE_CAPTURE_EXE
-    2. prefs 字典中的 captureExe 键
-    3. 系统 PATH
-    4. 常见安装目录
-    """
-    # 1. 环境变量
-    env_path = os.environ.get("SCHCOMPARE_CAPTURE_EXE", "").strip()
-    if env_path:
-        p = Path(env_path)
-        if p.is_file():
-            return p
+    env = os.environ.get("SCHCOMPARE_CAPTURE_EXE", "").strip()
+    if env:
+        path = Path(env)
+        if path.is_file():
+            return path
 
-    # 2. prefs 配置
     if prefs:
-        cfg = str(prefs.get("captureExe", "")).strip()
-        if cfg:
-            p = Path(cfg)
-            if p.is_file():
-                return p
+        configured = str(prefs.get("captureExe") or "").strip()
+        if configured:
+            path = Path(configured)
+            if path.is_file():
+                return path
 
-    # 3. 系统 PATH
     found = shutil.which("capture.exe")
     if found:
         return Path(found)
 
-    # 4. 常见安装目录（Cadence 17.x / 22.x / 23.x）
     if sys.platform == "win32":
-        for base_dir in (
-            r"C:\Cadence",
-            r"C:\Cadence\SPB_17.4",
-            r"C:\Cadence\SPB_22.1",
-            os.path.expandvars(r"%CDSROOT%"),
-        ):
-            candidate = Path(base_dir) / "tools" / "capture" / "capture.exe"
+        candidates = [
+            Path(r"C:\Cadence\SPB_23.1\tools\bin\capture.exe"),
+            Path(r"C:\Cadence\SPB_22.1\tools\bin\capture.exe"),
+            Path(r"C:\Cadence\SPB_17.4\tools\bin\capture.exe"),
+        ]
+        cds_root = os.environ.get("CDS_ROOT", "").strip()
+        if cds_root:
+            candidates.append(Path(cds_root) / "tools" / "bin" / "capture.exe")
+        for candidate in candidates:
             if candidate.is_file():
                 return candidate
-
     return None
 
 
 def is_capture_already_running(capture_exe: Path | None = None) -> bool:
-    """检查 capture.exe 是否已在运行（仅 Windows）。"""
     if sys.platform != "win32":
         return False
     try:
@@ -83,54 +73,66 @@ def is_capture_already_running(capture_exe: Path | None = None) -> bool:
             capture_output=True,
             text=True,
             timeout=5,
+            **_win_subprocess_kwargs(show_console=False),
         )
-        return "capture.exe" in result.stdout.lower()
     except Exception:
         return False
+    if "capture.exe" not in result.stdout.lower():
+        return False
+    return True
 
 
-def write_capture_debug_tcl(content: str, filename: str = "schcompare_bundle.tcl") -> Path:
-    """将合并后的 Tcl 脚本内容写入临时文件。"""
-    tmp_dir = Path(tempfile.gettempdir()) / "schcompare"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tcl_path = tmp_dir / filename
-    tcl_path.write_text(content, encoding="utf-8")
+def write_capture_debug_tcl(content: str, filename: str = "temp.tcl") -> Path:
+    temp_dir = Path(os.environ.get("TEMP") or os.environ.get("TMP") or tempfile.gettempdir())
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    tcl_path = temp_dir / filename
+    tcl_path.write_text((content or "").rstrip() + "\n", encoding="utf-8")
     return tcl_path
 
 
-def run_capture_with_tcl(
-    capture_exe: Path,
-    tcl_content: str,
-    *,
-    timeout_sec: float = 600.0,
-) -> str:
-    """
-    将 Tcl 内容写入临时文件，通过 capture.exe -TCLScript 执行。
-    返回 stdout+stderr 的尾部输出。
-    """
-    check_capture_environment()
+def _capture_export_argv(capture_exe: Path, tcl_path: Path, product: str = "") -> list[str]:
+    argv = [str(capture_exe.resolve())]
+    if product.strip():
+        argv.extend(["-product", product.strip()])
+    if os.environ.get("SCHCOMPARE_CAPTURE_USE_TCLFILE_ARG", "").strip() == "1":
+        argv.extend(["-tclfile", str(tcl_path.resolve())])
+    else:
+        argv.append(str(tcl_path.resolve()))
+    return argv
 
-    tcl_path = write_capture_debug_tcl(tcl_content)
 
-    cmd = [str(capture_exe), "-TCLScript", str(tcl_path)]
-
+def _terminate_capture_process(proc: subprocess.Popen[Any], grace_sec: float = 12.0) -> None:
+    if proc.poll() is not None:
+        return
     try:
-        result = subprocess.run(
-            cmd,
+        proc.terminate()
+        proc.wait(timeout=grace_sec)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            pass
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def _terminate_process_tree_win(proc: subprocess.Popen[Any]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
             capture_output=True,
             text=True,
-            timeout=timeout_sec,
-            cwd=str(tcl_path.parent),
+            timeout=25,
+            **_win_subprocess_kwargs(show_console=False),
         )
-        output = (result.stdout or "") + "\n" + (result.stderr or "")
-        return output[-2000:]  # 仅保留尾部便于诊断
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            f"Capture 执行超时（{timeout_sec}s）。"
-            "请检查 DSN 文件是否过大或 Capture 是否卡死。"
-        )
-    except FileNotFoundError:
-        raise RuntimeError(f"无法执行 capture.exe：{capture_exe}")
+    except Exception:
+        _terminate_capture_process(proc)
 
 
 def run_capture_with_tcl_path(
@@ -138,27 +140,69 @@ def run_capture_with_tcl_path(
     product: str,
     tcl_path: Path,
     *,
-    subprocess_timeout_sec: float = 600.0,
+    subprocess_timeout_sec: float = 120.0,
 ) -> str:
-    """通过已有 Tcl 文件路径执行 Capture（兼容旧接口）。"""
     check_capture_environment()
 
-    cmd = [str(capture_exe)]
-    if product:
-        cmd.extend(["-product", product])
-    cmd.extend(["-TCLScript", str(tcl_path)])
-
+    argv = _capture_export_argv(capture_exe, tcl_path, product)
+    cwd_bin = str(capture_exe.resolve().parent)
+    log_fd, log_name = tempfile.mkstemp(suffix=".log", prefix="schcompare_capmsg_")
+    os.close(log_fd)
+    log_path = Path(log_name)
+    proc: subprocess.Popen[Any] | None = None
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=subprocess_timeout_sec,
-            cwd=str(tcl_path.parent),
-        )
-        output = (result.stdout or "") + "\n" + (result.stderr or "")
-        return output[-2000:]
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Capture 执行超时（{subprocess_timeout_sec}s）")
-    except FileNotFoundError:
-        raise RuntimeError(f"无法执行 capture.exe：{capture_exe}")
+        with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
+            popen_kwargs: dict[str, Any] = {
+                "stdout": log_file,
+                "stderr": subprocess.STDOUT,
+                "env": os.environ.copy(),
+                "cwd": cwd_bin,
+            }
+            popen_kwargs.update(_win_subprocess_kwargs(show_console=False))
+            if sys.platform == "win32":
+                comspec = os.environ.get("COMSPEC", "cmd.exe")
+                inner = subprocess.list2cmdline(argv)
+                popen_kwargs["args"] = [comspec, "/c", inner]
+            else:
+                popen_kwargs["args"] = argv
+            proc = subprocess.Popen(**popen_kwargs)
+            try:
+                proc.wait(timeout=subprocess_timeout_sec)
+            except subprocess.TimeoutExpired:
+                if sys.platform == "win32":
+                    _terminate_process_tree_win(proc)
+                else:
+                    _terminate_capture_process(proc)
+
+        output = log_path.read_text(encoding="utf-8", errors="replace")
+        exit_code = proc.poll() if proc is not None else None
+        if (
+            exit_code is not None
+            and exit_code != 0
+            and os.environ.get("SCHCOMPARE_IGNORE_CAPTURE_EXIT_CODE", "").strip() != "1"
+        ):
+            tail = (output or "").strip()[-2000:] if (output or "").strip() else "（空）"
+            raise RuntimeError(f"capture.exe 退出码 {exit_code}。子进程日志尾部：\n{tail}")
+        return output
+    finally:
+        try:
+            log_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def run_capture_with_tcl(
+    capture_exe: Path,
+    tcl_content: str,
+    *,
+    product: str = "",
+    timeout_sec: float = 120.0,
+) -> str:
+    check_capture_environment()
+    tcl_path = write_capture_debug_tcl(tcl_content, filename="schcompare_bundle.tcl")
+    return run_capture_with_tcl_path(
+        capture_exe,
+        product,
+        tcl_path,
+        subprocess_timeout_sec=timeout_sec,
+    )

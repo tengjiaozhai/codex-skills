@@ -1,152 +1,173 @@
-#===========================================================================
-# capFind.tcl — OrCAD Capture 定位函数
+# capFind.tcl — 仅封装 Capture 内置 FindParts / FindPins / FindNets
+# 多 section：FindParts U1000 失败会试 U1000A…U1000Z；FindPins U1000.J12 失败会试 U1000A.J12 …
 #
-# 功能：在 Capture GUI 中根据位号或网络名定位并高亮对应的原理图对象。
-# 用于对比结果的双击跳转功能。
-#
-# 用法（在 Capture Tcl 控制台中）：
-#   source /path/to/capFind.tcl
-#   capFindRefDes "R1"             ;# 定位到器件 R1
-#   capFindNet "VCC_3V3"           ;# 定位到网络 VCC_3V3
-#   capFindOnPage "PAGE1" "R1"     ;# 在指定页面定位器件
-#
-# 依赖：OrCAD Capture 17.4+ 的 GUI 环境（需要窗口可见）
-#===========================================================================
+#   source [file normalize {D:/03_AI/test/capFind.tcl}]
+#   caploc …   caplocr …   caplocn …   caplocp …   caplcc
 
-namespace eval ::schcompare_find {
-    variable nullObj NULL
+package require Tcl 8.4
+package provide capFind 1.0
+
+namespace eval ::capFind {
+    variable _suffixLetters {A B C D E F G H I J K L M N O P Q R S T U V W X Y Z}
 }
 
-# ---------- 基础：获取当前活动设计 ----------
-
-proc ::schcompare_find::get_session {} {
-    if {[llength [info commands DboTclHelper_GetSession]]} {
-        if {![catch {DboTclHelper_GetSession} sess]} {
-            if {$sess ne "" && $sess ne "NULL"} {
-                return $sess
-            }
+# Find* 第二参数为布尔字符串；兼容 FALSE / false
+proc ::capFind::_findWithBoolArg {cmd arg} {
+    if {$arg eq "" || [llength [info commands $cmd]] != 1} {
+        return 0
+    }
+    foreach ba {FALSE false} {
+        if {![catch [list $cmd $arg $ba]]} {
+            return 1
         }
     }
-    foreach gv {::DboSession_s_pDboSession ::dboSession_s_pDboSession} {
-        if {[info exists $gv]} {
-            set sess [set $gv]
-            if {$sess ne "" && $sess ne "NULL"} {
-                return $sess
-            }
+    return 0
+}
+
+# 先精确位号；失败且形如 U1000（字母+至少3位尾数）再试 U1000A…U1000Z
+proc ::capFind::findPartsCmd {refDes} {
+    set r [string trim $refDes]
+    if {![regexp {^[A-Za-z]+[0-9]{3,}$} $r]} {
+        return [::capFind::_findWithBoolArg FindParts $r]
+    }
+    if {[::capFind::_findWithBoolArg FindParts $r]} {
+        return 1
+    }
+    variable _suffixLetters
+    foreach suf $_suffixLetters {
+        if {[::capFind::_findWithBoolArg FindParts ${r}${suf}]} {
+            return 1
         }
     }
-    error "无法获取 Capture Session"
+    return 0
 }
 
-proc ::schcompare_find::get_active_design {} {
-    set sess [get_session]
-    if {[llength [info commands DboSession]]} {
-        catch {DboSession -this $sess}
+proc ::capFind::findNetsCmd {netName} {
+    return [::capFind::_findWithBoolArg FindNets [string trim $netName]]
+}
+
+# 先用户原串；若失败且为「数字结尾位号 + . + 管脚」则试 U1000A.J12 … U1000Z.J12（等同常见 U1000F.J12）
+proc ::capFind::findPinsCmdSmart {refDotPin} {
+    set s [string trim $refDotPin]
+    if {$s eq ""} {
+        return 0
     }
-    if {[catch {set d [$sess GetActiveDesign]} err]} {
-        if {[catch {set d [$sess getActiveDesign]} err2]} {
-            error "GetActiveDesign 失败: $err / $err2"
+    if {[::capFind::_findWithBoolArg FindPins $s]} {
+        return 1
+    }
+    if {![regexp {^(.+[0-9])(\.)(.+)$} $s _ base dot tail]} {
+        return 0
+    }
+    variable _suffixLetters
+    foreach suf $_suffixLetters {
+        if {[::capFind::_findWithBoolArg FindPins ${base}${suf}${dot}${tail}]} {
+            return 1
         }
     }
-    if {$d eq "" || $d eq "NULL"} {
-        error "No active design — open a .DSN first"
+    return 0
+}
+
+proc ::capFind::cleanupLastPage {} {
+    catch {UnSelectAll}
+}
+
+# 去掉用户误传的第二参数（与 Tcl 里 Find* 的 FALSE 混淆）
+proc ::capFind::normalizeLocateArg {s} {
+    set t [string trim $s]
+    if {[regexp -nocase {^(.+)\s+false$} $t _ a]} {
+        return [string trim $a]
     }
-    return $d
+    return $t
 }
 
-# ---------- 获取对象名 ----------
-
-proc ::schcompare_find::obj_name {obj} {
-    set lN [DboTclHelper_sMakeCString]
-    $obj GetName $lN
-    return [DboTclHelper_sGetConstCharPtr $lN]
+proc ::capFind::locateByRefDes {refDes {quietNotFound 0}} {
+    set refDes [::capFind::normalizeLocateArg $refDes]
+    ::capFind::cleanupLastPage
+    if {[::capFind::findPartsCmd $refDes]} {
+        return 1
+    }
+    if {!$quietNotFound} {
+        puts "capFind: FindParts failed or no match: $refDes"
+    }
+    return 0
 }
 
-# ---------- 定位到指定器件位号 ----------
+proc ::capFind::locateByNet {netName} {
+    set netName [::capFind::normalizeLocateArg $netName]
+    ::capFind::cleanupLastPage
+    if {[::capFind::findNetsCmd $netName]} {
+        return
+    }
+    puts "capFind: FindNets failed or no match: $netName"
+}
 
-proc capFindRefDes {refdes} {
-    set lStatus [DboState]
-    set design [::schcompare_find::get_active_design]
+proc ::capFind::locateByPin {pinPath} {
+    set pinPath [::capFind::normalizeLocateArg $pinPath]
+    ::capFind::cleanupLastPage
+    if {[string first . $pinPath] < 0} {
+        puts {capFind: Pin path must be Ref.Pin e.g. U1000.J12}
+        return
+    }
+    if {[::capFind::findPinsCmdSmart $pinPath]} {
+        return
+    }
+    puts "capFind: FindPins failed: $pinPath (and U1000[A-Z].… variants if applicable)."
+}
 
-    set lSchematicIter [$design NewViewsIter $lStatus $::IterDefs_SCHEMATICS]
-    set lView [$lSchematicIter NextView $lStatus]
-    while {$lView != "NULL"} {
-        set lSchematic [DboViewToDboSchematic $lView]
-        set lPagesIter [$lSchematic NewPagesIter $lStatus]
-        set lPage [$lPagesIter NextPage $lStatus]
-        while {$lPage != "NULL"} {
-            set lPartInstsIter [$lPage NewPartInstsIter $lStatus]
-            set lInst [$lPartInstsIter NextPartInst $lStatus]
-            while {$lInst != "NULL"} {
-                set lPlacedInst [DboPartInstToDboPlacedInst $lInst]
-                if {$lPlacedInst != "NULL"} {
-                    set lRefC [DboTclHelper_sMakeCString]
-                    $lPlacedInst GetReferenceDesignator $lRefC
-                    set rd [DboTclHelper_sGetConstCharPtr $lRefC]
-                    if {[string equal -nocase $rd $refdes]} {
-                        # 定位到该页面
-                        set pgName [::schcompare_find::obj_name $lPage]
-                        puts "capFind: found $refdes on page $pgName"
-                        # 尝试激活页面并选中对象
-                        catch {
-                            $lPage Open $lStatus
-                            $lPlacedInst Select $lStatus
-                        }
-                        delete_DboPagePartInstsIter $lPartInstsIter
-                        delete_DboSchematicPagesIter $lPagesIter
-                        delete_DboLibViewsIter $lSchematicIter
-                        $lStatus -delete
-                        return $pgName
-                    }
-                }
-                set lInst [$lPartInstsIter NextPartInst $lStatus]
-            }
-            delete_DboPagePartInstsIter $lPartInstsIter
-            set lPage [$lPagesIter NextPage $lStatus]
+# caploc：含点 → 管脚；无点且含下划线 → 先网络后位号；否则先位号后网络（避免 C1241 被 FindNets 误伤）
+proc ::capFind::autoFind {input} {
+    set in [::capFind::normalizeLocateArg $input]
+    if {[string first . $in] >= 0} {
+        ::capFind::locateByPin $in
+        return
+    }
+    ::capFind::cleanupLastPage
+    if {[string first _ $in] >= 0} {
+        if {[::capFind::findNetsCmd $in]} {
+            return
         }
-        delete_DboSchematicPagesIter $lPagesIter
-        set lView [$lSchematicIter NextView $lStatus]
-    }
-    delete_DboLibViewsIter $lSchematicIter
-    $lStatus -delete
-    puts "capFind: $refdes not found"
-    return ""
-}
-
-# ---------- 定位到指定网络 ----------
-
-proc capFindNet {netname} {
-    set lStatus [DboState]
-    set design [::schcompare_find::get_active_design]
-
-    if {[catch {
-        set niter [$design NewFlatNetsIter $lStatus]
-        set net [$niter NextFlatNet $lStatus]
-        while {$net != "NULL"} {
-            set nname [::schcompare_find::obj_name $net]
-            if {[string equal -nocase $nname $netname]} {
-                puts "capFind: found net $netname"
-                catch {delete_DboDesignFlatNetsIter $niter}
-                $lStatus -delete
-                return $nname
-            }
-            set net [$niter NextFlatNet $lStatus]
+        if {[::capFind::findPartsCmd $in]} {
+            return
         }
-        catch {delete_DboDesignFlatNetsIter $niter}
-    } err]} {
-        puts "capFind: error searching net: $err"
+    } else {
+        if {[::capFind::findPartsCmd $in]} {
+            return
+        }
+        if {[::capFind::findNetsCmd $in]} {
+            return
+        }
     }
-    $lStatus -delete
-    puts "capFind: net $netname not found"
-    return ""
+    puts "capFind: No match (FindParts / FindNets): $in"
 }
 
-# ---------- 在指定页面上定位器件 ----------
-
-proc capFindOnPage {pageName refdes} {
-    puts "capFind: searching for $refdes on page $pageName"
-    # 简化版：直接调用 capFindRefDes（完整版应先导航到指定页面）
-    return [capFindRefDes $refdes]
+proc ::capFind::cleanup {} {
+    ::capFind::cleanupLastPage
+    foreach pmTab [list {Project Manager} "\u9879\u76ee\u7ba1\u7406\u5668"] {
+        catch {SwitchTab $pmTab}
+    }
 }
 
-puts "capFind.tcl loaded — commands: capFindRefDes, capFindNet, capFindOnPage"
+proc ::capFind::caplocv {} {
+    if {[info script] ne ""} {
+        puts [file normalize [info script]]
+    }
+}
+
+namespace export autoFind locateByRefDes locateByNet locateByPin cleanup caplocv
+
+proc ::capFind::_registerGlobalAliases {} {
+    foreach {alias target} {
+        caploc  ::capFind::autoFind
+        caplocr ::capFind::locateByRefDes
+        caplocn ::capFind::locateByNet
+        caplocp ::capFind::locateByPin
+        caplcc  ::capFind::cleanup
+        caplocv ::capFind::caplocv
+    } {
+        if {[info commands $alias] ne ""} {
+            catch {rename $alias ""}
+        }
+        interp alias {} $alias {} $target
+    }
+}
+::capFind::_registerGlobalAliases

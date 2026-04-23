@@ -106,7 +106,9 @@ def _run_compare(
             sys.exit(1)
 
         print("\n--- 正在执行对比算法 ---")
-        prefs = csv_diff.build_default_compare_prefs(p1, p2, i1, i2, n1, n2)
+        prefs = csv_diff.build_default_compare_prefs(
+            p1, p2, i1, i2, n1, n2, mode=mode
+        )
         results, err = csv_diff.compare_all_dsn_csvs_from_prefs(prefs)
         if err:
             print(f"❌ 对比失败: {err}")

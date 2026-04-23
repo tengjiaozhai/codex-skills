@@ -333,6 +333,67 @@ def _pin_snapshot_line(row: list[str], headers: list[str]) -> str:
     return " | ".join(bits)
 
 
+def _pins_or_nets_attr_snapshot_line_loose(
+    headers: list[str], row: list[str], category: str
+) -> str:
+    loc = _locate_column_indices(headers)
+    skip = {idx for idx in (loc["schematic"], loc["page"]) if idx >= 0}
+    bits: list[str] = []
+    for idx, name in enumerate(headers):
+        if idx in skip:
+            continue
+        value = _cell(row, idx)
+        if not value:
+            continue
+        bits.append(f"{name}：{value}")
+    return " | ".join(bits) if bits else "-"
+
+
+def _value_column_label_for_table(category: str, prop_name: str) -> str:
+    text = (prop_name or "").strip()
+    if not text:
+        return ""
+    cf = text.casefold()
+    if category == "管脚":
+        if ("pin" in cf and "name" in cf) or cf in ("pin name", "pinname", "信号名", "管脚名"):
+            return "脚名"
+        if "net" in cf or "signal" in cf or ("flat" in cf and "net" in cf) or "网络" in text:
+            return "网名"
+    if category == "网络":
+        if "pin" in cf and "global" in cf:
+            return "Pins（Global）"
+        if "pin" in cf and "page" in cf:
+            return "Pins"
+    return text
+
+
+def _pins_or_nets_pairs_snapshot_line(
+    row: list[str],
+    category: str,
+    pairs_eff: list[tuple[str, int, int]] | None,
+    *,
+    side: str,
+) -> str:
+    if not pairs_eff:
+        return "-"
+    bits: list[str] = []
+    for label, idx_old, idx_new in pairs_eff:
+        idx = idx_new if side == "new" else idx_old
+        if idx < 0:
+            idx = idx_old if side == "new" else idx_new
+        value = _cell(row, idx)
+        if not value:
+            continue
+        label_base = label.split(" / ")[0].strip() if " / " in label else label
+        display = (
+            _value_column_label_for_table(category, label)
+            or _value_column_label_for_table(category, label_base)
+            or label
+        )
+        bits.append(f"{display}：{value}")
+    return " | ".join(bits) if bits else "-"
+
+
 def _pin_refdes_dot_pin(row: list[str], headers: list[str]) -> str:
     loc = _locate_column_indices(headers)
     refdes = _cell(row, loc["refdes"])
@@ -345,6 +406,7 @@ def compare_pins_csv_pair(
     path_new: Path,
     *,
     pins_nets_column_compare: Any | None = None,
+    full_snapshot_for_add_delete: bool = False,
 ) -> list[DiffRow]:
     headers_old, body_old = _read_csv(path_old)
     headers_new, body_new = _read_csv(path_new)
@@ -385,19 +447,39 @@ def compare_pins_csv_pair(
             continue
         if old_row is not None:
             ref_pin = _pin_refdes_dot_pin(old_row, headers_old)
+            if full_snapshot_for_add_delete:
+                old_snapshot = _pin_snapshot_line(old_row, headers_old)
+            else:
+                old_snapshot = (
+                    _pins_or_nets_pairs_snapshot_line(
+                        old_row, "管脚", pairs, side="old"
+                    )
+                    if pairs is not None
+                    else _pins_or_nets_attr_snapshot_line_loose(headers_old, old_row, "管脚")
+                )
             rows.append(
                 DiffRow(
                     category="管脚",
                     change_type=DELETE,
                     object_id=f"[Pins] {key}",
                     detail=f"删除{ref_pin}",
-                    old_value=_pin_snapshot_line(old_row, headers_old),
+                    old_value=old_snapshot,
                     new_value="",
                     meta=_csv_row_location_meta(headers_old, old_row, headers_new, None),
                 )
             )
         if new_row is not None:
             ref_pin = _pin_refdes_dot_pin(new_row, headers_new)
+            if full_snapshot_for_add_delete:
+                new_snapshot = _pin_snapshot_line(new_row, headers_new)
+            else:
+                new_snapshot = (
+                    _pins_or_nets_pairs_snapshot_line(
+                        new_row, "管脚", pairs, side="new"
+                    )
+                    if pairs is not None
+                    else _pins_or_nets_attr_snapshot_line_loose(headers_new, new_row, "管脚")
+                )
             rows.append(
                 DiffRow(
                     category="管脚",
@@ -405,7 +487,7 @@ def compare_pins_csv_pair(
                     object_id=f"[Pins] {key}",
                     detail=f"新增{ref_pin}",
                     old_value="",
-                    new_value=_pin_snapshot_line(new_row, headers_new),
+                    new_value=new_snapshot,
                     meta=_csv_row_location_meta(headers_old, None, headers_new, new_row),
                 )
             )
@@ -428,6 +510,18 @@ def _normalize_pin_list(payload: str) -> str:
     return ", ".join(unique[key] for key in sorted(unique, key=str.lower))
 
 
+def _nets_ordered_pin_tokens_from_cell(cell: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for match in _PIN_TOKEN.finditer(str(cell or "")):
+        token = f"{match.group(1).strip()}.{match.group(2).strip()}"
+        key = token.casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(token)
+    return out
+
+
 def _net_row_key(row: list[str], headers: list[str]) -> str:
     loc = _locate_column_indices(headers)
     net_name = _cell(row, loc["net"])
@@ -441,19 +535,115 @@ def _net_name_from_key(key: str) -> str:
 
 
 def _nets_pins_connection_detail_cn(old_value: str, new_value: str) -> str:
-    old_tokens = {token.casefold(): token for token in _nets_tokenize_pin_like_list(old_value)}
-    new_tokens = {token.casefold(): token for token in _nets_tokenize_pin_like_list(new_value)}
-    added = [new_tokens[key] for key in sorted(set(new_tokens) - set(old_tokens), key=str.lower)]
-    removed = [old_tokens[key] for key in sorted(set(old_tokens) - set(new_tokens), key=str.lower)]
-    segments: list[str] = []
+    old_tokens = _nets_ordered_pin_tokens_from_cell(old_value)
+    new_tokens = _nets_ordered_pin_tokens_from_cell(new_value)
+    old_set = {token.casefold() for token in old_tokens}
+    new_set = {token.casefold() for token in new_tokens}
+    if not old_set and not new_set:
+        return "Pins"
+    removed = [token for token in old_tokens if token.casefold() in (old_set - new_set)]
+    added = [token for token in new_tokens if token.casefold() in (new_set - old_set)]
+    bits = ["Pins"]
     if removed:
-        segments.append(f"Pins 减少{','.join(removed)}")
+        bits.append(f"减少{','.join(removed)}")
     if added:
-        if removed:
-            segments.append(f"增加{','.join(added)}")
-        else:
-            segments.append(f"Pins 增加{','.join(added)}")
-    return " ".join(segments) if segments else "Pins"
+        bits.append(f"增加{','.join(added)}")
+    return " ".join(bits) if len(bits) > 1 else "Pins"
+
+
+def _nets_cell_at_row(row: list[str], idx: int) -> str:
+    return _cell(row, idx)
+
+
+def _is_nets_pins_aggregate_column(col_name: str) -> bool:
+    cf = (col_name or "").casefold()
+    return "pin" in cf and ("page" in cf or "global" in cf)
+
+
+def _is_nets_pins_page_only_column(col_name: str) -> bool:
+    cf = (col_name or "").casefold()
+    return _is_nets_pins_aggregate_column(col_name) and "page" in cf and "global" not in cf
+
+
+def _nets_pair_pins_display_strings(
+    row_old: list[str],
+    row_new: list[str],
+    pairs_eff: list[tuple[str, int, int]] | None,
+    headers: list[str],
+) -> tuple[str, str, str]:
+    if pairs_eff is not None:
+        page_pairs = [
+            (label, idx_old, idx_new)
+            for label, idx_old, idx_new in pairs_eff
+            if _is_nets_pins_page_only_column(label)
+        ]
+        if len(page_pairs) >= 2:
+            old_joined = _nets_join_cells_to_comma_pin_list(
+                [_nets_cell_at_row(row_old, idx_old) for _label, idx_old, _idx_new in page_pairs]
+            )
+            new_joined = _nets_join_cells_to_comma_pin_list(
+                [_nets_cell_at_row(row_new, idx_new) for _label, _idx_old, idx_new in page_pairs]
+            )
+            return old_joined, new_joined, "Pins（Page）"
+        aggregate_pairs = [
+            (label, idx_old, idx_new)
+            for label, idx_old, idx_new in pairs_eff
+            if _is_nets_pins_aggregate_column(label)
+        ]
+        if len(aggregate_pairs) == 1:
+            label, idx_old, idx_new = aggregate_pairs[0]
+            return _nets_cell_at_row(row_old, idx_old), _nets_cell_at_row(row_new, idx_new), label
+        for label, idx_old, idx_new in pairs_eff:
+            cf = (label or "").casefold()
+            if "internet" in cf:
+                continue
+            if "pin" in cf:
+                return _nets_cell_at_row(row_old, idx_old), _nets_cell_at_row(row_new, idx_new), label
+        return "-", "-", "Pins (Page)"
+
+    aggregate_idxs = [idx for idx, header in enumerate(headers) if _is_nets_pins_aggregate_column(header)]
+    if len(aggregate_idxs) >= 2:
+        return (
+            _nets_join_cells_to_comma_pin_list([_nets_cell_at_row(row_old, idx) for idx in aggregate_idxs]),
+            _nets_join_cells_to_comma_pin_list([_nets_cell_at_row(row_new, idx) for idx in aggregate_idxs]),
+            "Pins（Page）",
+        )
+    if len(aggregate_idxs) == 1:
+        idx = aggregate_idxs[0]
+        return _nets_cell_at_row(row_old, idx), _nets_cell_at_row(row_new, idx), headers[idx]
+    return "-", "-", "Pins (Page)"
+
+
+def _nets_join_cells_to_comma_pin_list(cells: list[str]) -> str:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in cells:
+        for token in _nets_tokenize_pin_like_list(str(raw or "")):
+            if not token or token in ("-", "—", "–"):
+                continue
+            key = token.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(token)
+    return ", ".join(ordered) if ordered else "-"
+
+
+def _nets_display_pin_list(cell: str) -> str:
+    joined = _nets_join_cells_to_comma_pin_list([cell])
+    if joined == "-" and not str(cell or "").strip():
+        return ""
+    return joined
+
+
+def _nets_single_row_pins_snapshot(
+    row: list[str],
+    pairs_eff: list[tuple[str, int, int]] | None,
+    headers: list[str],
+) -> str:
+    old_text, new_text, _label = _nets_pair_pins_display_strings(row, row, pairs_eff, headers)
+    text = (old_text or "").strip() or (new_text or "").strip()
+    return _nets_display_pin_list(text) if text else "-"
 
 
 def compare_nets_csv_pair(
@@ -461,6 +651,7 @@ def compare_nets_csv_pair(
     path_new: Path,
     *,
     pins_nets_column_compare: Any | None = None,
+    sort_pin_snapshots: bool = False,
 ) -> list[DiffRow]:
     headers_old, body_old = _read_csv(path_old)
     headers_new, body_new = _read_csv(path_new)
@@ -482,8 +673,16 @@ def compare_nets_csv_pair(
         new_row = new_map.get(key)
         if old_row is not None and new_row is not None:
             for label, old_idx, new_idx in pairs or []:
-                old_value = _normalize_pin_list(_cell(old_row, old_idx))
-                new_value = _normalize_pin_list(_cell(new_row, new_idx))
+                old_value = (
+                    _normalize_pin_list(_cell(old_row, old_idx))
+                    if sort_pin_snapshots
+                    else _nets_display_pin_list(_cell(old_row, old_idx))
+                )
+                new_value = (
+                    _normalize_pin_list(_cell(new_row, new_idx))
+                    if sort_pin_snapshots
+                    else _nets_display_pin_list(_cell(new_row, new_idx))
+                )
                 if old_value == new_value:
                     continue
                 rows.append(
@@ -500,18 +699,24 @@ def compare_nets_csv_pair(
                 )
             continue
         if old_row is not None:
+            old_snapshot = _nets_single_row_pins_snapshot(old_row, pairs, headers_old)
+            if sort_pin_snapshots:
+                old_snapshot = _normalize_pin_list(old_snapshot)
             rows.append(
                 DiffRow(
                     category="网络",
                     change_type=DELETE,
                     object_id=f"[Nets] {key}",
                     detail=f"删除{_net_name_from_key(key)}",
-                    old_value=_normalize_pin_list(_cell(old_row, pairs[0][1] if pairs else -1)),
+                    old_value=old_snapshot,
                     new_value="",
                     meta=_csv_row_location_meta(headers_old, old_row, headers_new, None),
                 )
             )
         if new_row is not None:
+            new_snapshot = _nets_single_row_pins_snapshot(new_row, pairs, headers_new)
+            if sort_pin_snapshots:
+                new_snapshot = _normalize_pin_list(new_snapshot)
             rows.append(
                 DiffRow(
                     category="网络",
@@ -519,7 +724,7 @@ def compare_nets_csv_pair(
                     object_id=f"[Nets] {key}",
                     detail=f"新增{_net_name_from_key(key)}",
                     old_value="",
-                    new_value=_normalize_pin_list(_cell(new_row, pairs[0][2] if pairs else -1)),
+                    new_value=new_snapshot,
                     meta=_csv_row_location_meta(headers_old, None, headers_new, new_row),
                 )
             )
@@ -641,6 +846,8 @@ def compare_csv_pair(
     parts_slot_map_old: dict[str, str] | None = None,
     parts_slot_map_new: dict[str, str] | None = None,
     pins_nets_column_compare: Any | None = None,
+    full_pin_snapshot_for_add_delete: bool = False,
+    sort_network_pin_snapshots: bool = False,
 ) -> list[DiffRow]:
     kind = sheet_kind.casefold()
     if kind == "parts":
@@ -655,12 +862,14 @@ def compare_csv_pair(
             path_old,
             path_new,
             pins_nets_column_compare=pins_nets_column_compare,
+            full_snapshot_for_add_delete=full_pin_snapshot_for_add_delete,
         )
     if kind == "nets":
         return compare_nets_csv_pair(
             path_old,
             path_new,
             pins_nets_column_compare=pins_nets_column_compare,
+            sort_pin_snapshots=sort_network_pin_snapshots,
         )
     return []
 
@@ -703,6 +912,9 @@ def compare_all_dsn_csvs_from_prefs(prefs: dict[str, Any]) -> tuple[list[DiffRow
                     old_path,
                     new_path,
                     pins_nets_column_compare=prefs.get("pinsCsvColumnCompare"),
+                    full_snapshot_for_add_delete=bool(
+                        prefs.get("pinsAddDeleteFullSnapshot")
+                    ),
                 )
             )
         else:
@@ -711,6 +923,7 @@ def compare_all_dsn_csvs_from_prefs(prefs: dict[str, Any]) -> tuple[list[DiffRow
                     old_path,
                     new_path,
                     pins_nets_column_compare=prefs.get("netsCsvColumnCompare"),
+                    sort_pin_snapshots=bool(prefs.get("sortNetworkPinSnapshots")),
                 )
             )
     rows = suppress_pin_add_delete_for_refdes_renumber(rows)
@@ -725,6 +938,8 @@ def build_default_compare_prefs(
     pins2: Path,
     nets1: Path,
     nets2: Path,
+    *,
+    mode: str = "csv",
 ) -> dict[str, Any]:
     return {
         "lastDsn1PartsCsv": str(parts1),
@@ -740,6 +955,8 @@ def build_default_compare_prefs(
         "netsCsvColumnCompare": [
             {"on": True, "d1": "Pins (Page)", "d2": "Pins (Page)"},
         ],
+        "pinsAddDeleteFullSnapshot": mode in ("edif", "dsn"),
+        "sortNetworkPinSnapshots": mode in ("edif", "dsn"),
     }
 
 
@@ -751,7 +968,9 @@ def compare_all_dsn_csvs(
     nets1: Path,
     nets2: Path,
 ) -> list[DiffRow]:
-    prefs = build_default_compare_prefs(parts1, parts2, pins1, pins2, nets1, nets2)
+    prefs = build_default_compare_prefs(
+        parts1, parts2, pins1, pins2, nets1, nets2, mode="edif"
+    )
     rows, err = compare_all_dsn_csvs_from_prefs(prefs)
     if err:
         raise FileNotFoundError(err)
