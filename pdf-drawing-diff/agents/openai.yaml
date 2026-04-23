@@ -1,0 +1,7 @@
+interface:
+  display_name: "PDF Drawing Diff"
+  short_description: "多 PDF 图纸差异分析与 bbox 标注"
+  default_prompt: "Use $pdf-drawing-diff to compare these local PDF drawings and generate pairwise bbox-annotated outputs plus JSON/Markdown/PDF reports."
+
+policy:
+  allow_implicit_invocation: true

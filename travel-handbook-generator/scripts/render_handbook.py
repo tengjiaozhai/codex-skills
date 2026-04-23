@@ -308,6 +308,33 @@ def add_hotel_card(document: Document, card_title: str, hotel: dict, image_path:
     p.add_run().add_picture(str(image_path), width=Cm(4.2))
 
 
+def add_hotel_options(document: Document, card_title: str, hotel_keys: list[str], spec: dict, theme: dict) -> None:
+    add_title_block(document, card_title, "以下为当前日期可选酒店，按当前实时查询结果整理。", theme)
+    table = document.add_table(rows=1, cols=4)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.style = "Table Grid"
+    headers = ["酒店", "价格", "选择理由", "链接"]
+    for idx, text in enumerate(headers):
+        cell = table.rows[0].cells[idx]
+        cell.text = text
+        shading = OxmlElement("w:shd")
+        shading.set(qn("w:fill"), theme["primary"])
+        cell._tc.get_or_add_tcPr().append(shading)
+        for paragraph in cell.paragraphs:
+            for run in paragraph.runs:
+                run.bold = True
+                run.font.color.rgb = RGBColor(255, 255, 255)
+                run.font.name = "PingFang SC"
+                run._element.rPr.rFonts.set(qn("w:eastAsia"), "PingFang SC")
+    for key in hotel_keys:
+        hotel = spec["hotels"][key]
+        cells = table.add_row().cells
+        cells[0].text = str(hotel["title"])
+        cells[1].text = str(hotel["price"])
+        cells[2].text = str(hotel["note"])
+        cells[3].text = str(hotel["page"])
+
+
 def add_price_table(document: Document, items: list[list[str] | tuple[str, str, str]], title: str, theme: dict) -> None:
     add_title_block(document, title, "以下金额按当前查询结果整理。", theme)
     table = document.add_table(rows=1, cols=3)
@@ -362,7 +389,8 @@ def materialize_images(spec: dict, paths: dict) -> dict[str, Path]:
         suffix = ".png"
         image_paths[key] = download_image(item["image"], paths["img_dir"] / f"{key}{suffix}")
     for key, item in spec.get("hotels", {}).items():
-        image_paths[key] = download_image(item["image"], paths["img_dir"] / f"{key}.jpg")
+        if item.get("image"):
+            image_paths[key] = download_image(item["image"], paths["img_dir"] / f"{key}.jpg")
     return image_paths
 
 
@@ -389,6 +417,9 @@ def build_document(spec: dict, image_paths: dict[str, Path], paths: dict, theme:
         if hotel_card:
             hotel = spec["hotels"][hotel_card["hotel_key"]]
             add_hotel_card(document, hotel_card["card_title"], hotel, image_paths[hotel_card["hotel_key"]], theme)
+        hotel_options = day.get("hotel_options")
+        if hotel_options:
+            add_hotel_options(document, hotel_options["card_title"], hotel_options["hotel_keys"], spec, theme)
 
     add_page_break(document)
     budget = spec["budget"]

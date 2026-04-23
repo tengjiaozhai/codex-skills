@@ -247,6 +247,13 @@ def parse_args() -> argparse.Namespace:
     )
     sample.add_argument("--output", type=Path, help="Optional output JSON path.")
 
+    from_markdown = subparsers.add_parser(
+        "from-markdown",
+        help="Read a Markdown resume and generate a DOCX resume.",
+    )
+    from_markdown.add_argument("--input", required=True, type=Path, help="Input markdown path.")
+    from_markdown.add_argument("--output", required=True, type=Path, help="Output .docx path.")
+
     inspect_template = subparsers.add_parser(
         "inspect-template",
         help="Inspect a fixed-layout DOCX template and emit layout metadata.",
@@ -283,27 +290,45 @@ def configure_document(doc: Document) -> None:
     section = doc.sections[0]
     section.page_width = Cm(21.0)
     section.page_height = Cm(29.7)
-    section.top_margin = Cm(1.45)
-    section.bottom_margin = Cm(1.45)
-    section.left_margin = Cm(1.65)
-    section.right_margin = Cm(1.65)
+    section.top_margin = Cm(1.08)
+    section.bottom_margin = Cm(1.08)
+    section.left_margin = Cm(1.22)
+    section.right_margin = Cm(1.22)
 
     normal = doc.styles["Normal"]
     normal.font.name = "Arial"
-    normal.font.size = Pt(10.5)
+    normal.font.size = Pt(9.4)
     _set_east_asia_font(normal, "Microsoft YaHei")
+    normal.paragraph_format.space_before = Pt(0)
+    normal.paragraph_format.space_after = Pt(0.5)
+    normal.paragraph_format.line_spacing = 1.04
 
     title = doc.styles["Title"]
     title.font.name = "Arial"
-    title.font.size = Pt(20)
+    title.font.size = Pt(18.0)
     title.font.bold = True
     _set_east_asia_font(title, "Microsoft YaHei")
+    title.paragraph_format.space_before = Pt(0)
+    title.paragraph_format.space_after = Pt(1.5)
+    title.paragraph_format.line_spacing = 1.02
 
     heading = doc.styles["Heading 1"]
     heading.font.name = "Arial"
-    heading.font.size = Pt(12.5)
+    heading.font.size = Pt(11.5)
     heading.font.bold = True
     _set_east_asia_font(heading, "Microsoft YaHei")
+    heading.paragraph_format.space_before = Pt(6)
+    heading.paragraph_format.space_after = Pt(3)
+    heading.paragraph_format.line_spacing = 1.03
+
+    if "List Bullet" in doc.styles:
+        bullet = doc.styles["List Bullet"]
+        bullet.font.name = "Arial"
+        bullet.font.size = Pt(9.4)
+        _set_east_asia_font(bullet, "Microsoft YaHei")
+        bullet.paragraph_format.space_before = Pt(0)
+        bullet.paragraph_format.space_after = Pt(0.5)
+        bullet.paragraph_format.line_spacing = 1.04
 
 
 def configure_template_document(doc: Document, style_tokens: dict[str, Any]) -> None:
@@ -358,6 +383,236 @@ def load_json(path: Path) -> dict[str, Any]:
     return data
 
 
+def split_md_header(text: str) -> tuple[str, str]:
+    for separator in (" - ", " | ", "｜", " — ", " – "):
+        if separator in text:
+            left, right = text.split(separator, 1)
+            return left.strip(), right.strip()
+    return text.strip(), ""
+
+
+def strip_md_emphasis(text: str) -> str:
+    cleaned = text.strip()
+    cleaned = re.sub(r"^\*+|\*+$", "", cleaned)
+    return cleaned.strip()
+
+
+def strip_bullet_prefix(text: str) -> str:
+    cleaned = text.strip()
+    cleaned = re.sub(r"^[•·●▪■\-]\s*", "", cleaned)
+    return cleaned.strip()
+
+
+def parse_markdown_contacts(lines: list[str]) -> dict[str, Any]:
+    basics: dict[str, Any] = {}
+    joined = " | ".join(line.strip() for line in lines if line.strip())
+    if not joined:
+        return basics
+
+    email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", joined)
+    if email_match:
+        basics["email"] = email_match.group(0)
+
+    phone_match = re.search(r"1[3-9]\d{9}", joined)
+    if phone_match:
+        basics["phone"] = phone_match.group(0)
+
+    parts = [part.strip() for part in joined.split("|") if part.strip()]
+    for part in parts:
+        if re.search(r"1[3-9]\d{9}", part) or "@" in part:
+            continue
+        if not basics.get("location"):
+            basics["location"] = part
+            break
+    return basics
+
+
+def parse_markdown_capabilities(lines: list[str]) -> list[dict[str, str] | str]:
+    items: list[dict[str, str] | str] = []
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        match = re.match(r"^\*\*(.+?)\*\*[:：]\s*(.+)$", line)
+        if match:
+            items.append({"label": match.group(1).strip(), "value": match.group(2).strip()})
+        else:
+            items.append(strip_bullet_prefix(strip_md_emphasis(line)))
+    return items
+
+
+def parse_markdown_role_header(line: str) -> tuple[str, str, str]:
+    match = re.match(r"^\*\*(.+?)\*\*\s*\((.+?)\)\s*$", line.strip())
+    if not match:
+        return "", "", ""
+
+    left = match.group(1).strip()
+    date = match.group(2).strip()
+    if " | " in left:
+        title, company = [part.strip() for part in left.split(" | ", 1)]
+    elif "|" in left:
+        title, company = [part.strip() for part in left.split("|", 1)]
+    else:
+        title, company = left, ""
+    return title, company, date
+
+
+def parse_markdown_experience(lines: list[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+
+    for raw in lines:
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        title, company, date = parse_markdown_role_header(stripped)
+        if title:
+            if current:
+                items.append(current)
+            current = {"title": title, "company": company, "date": date, "bullets": []}
+            continue
+
+        if stripped.startswith(("•", "-", "●", "▪", "■")) and current is not None:
+            current["bullets"].append(strip_bullet_prefix(stripped))
+
+    if current:
+        items.append(current)
+    return items
+
+
+def parse_markdown_projects(lines: list[str]) -> list[Any]:
+    items: list[Any] = []
+    current_header: dict[str, Any] | None = None
+    current_mode: str | None = None
+    current_responsibilities: list[str] = []
+    current_results: list[str] = []
+
+    def flush_current() -> None:
+        nonlocal current_header, current_mode, current_responsibilities, current_results
+        if current_header is None:
+            return
+        items.append(current_header)
+        if current_responsibilities:
+            items.append({"text": "工作职责："})
+            items.extend(current_responsibilities)
+        if current_results:
+            items.append({"text": "项目成果："})
+            items.extend(current_results)
+        current_header = None
+        current_mode = None
+        current_responsibilities = []
+        current_results = []
+
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+
+        title, _, date = parse_markdown_role_header(stripped)
+        if title:
+            flush_current()
+            current_header = {"title": title, "date": date}
+            continue
+
+        label = strip_md_emphasis(stripped)
+        if label == "工作职责：":
+            current_mode = "responsibility"
+            continue
+        if label == "项目成果：":
+            current_mode = "result"
+            continue
+
+        if stripped.startswith(("•", "-", "●", "▪", "■")):
+            bullet = strip_bullet_prefix(stripped)
+            if current_mode == "result":
+                current_results.append(bullet)
+            else:
+                current_responsibilities.append(bullet)
+
+    flush_current()
+    return items
+
+
+def parse_markdown_education(lines: list[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        date_match = re.search(r"\(([^)]+)\)\s*$", stripped)
+        date = date_match.group(1).strip() if date_match else ""
+        body = stripped[: date_match.start()].strip() if date_match else stripped
+        parts = [part.strip() for part in body.split("|") if part.strip()]
+        if len(parts) >= 3:
+            major, degree, school = parts[:3]
+            items.append({"title": f"{major} | {degree}", "company": school, "date": date})
+        else:
+            items.append({"title": body, "date": date})
+    return items
+
+
+def parse_markdown_resume(path: Path) -> dict[str, Any]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    name = "Candidate Name"
+    title = ""
+    current_section: str | None = None
+    sections_raw: dict[str, list[str]] = {}
+
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith("# "):
+            name, title = split_md_header(stripped[2:].strip())
+            continue
+        if stripped.startswith("## "):
+            current_section = stripped[3:].strip()
+            sections_raw[current_section] = []
+            continue
+        if current_section is not None:
+            sections_raw[current_section].append(raw.rstrip())
+
+    basics = parse_markdown_contacts(sections_raw.get("联系方式", []))
+    data: dict[str, Any] = {
+        "name": name,
+        "title": title,
+        "location": basics.get("location", ""),
+        "email": basics.get("email", ""),
+        "phone": basics.get("phone", ""),
+        "sections": [],
+    }
+
+    if sections_raw.get("核心能力"):
+        data["sections"].append(
+            {"heading": "核心能力", "items": parse_markdown_capabilities(sections_raw["核心能力"])}
+        )
+
+    if sections_raw.get("工作经历"):
+        data["sections"].append(
+            {"heading": "工作经历", "items": parse_markdown_experience(sections_raw["工作经历"])}
+        )
+
+    if sections_raw.get("项目经历"):
+        data["sections"].append(
+            {"heading": "项目经历", "items": parse_markdown_projects(sections_raw["项目经历"])}
+        )
+
+    if sections_raw.get("教育背景"):
+        data["sections"].append(
+            {"heading": "教育背景", "items": parse_markdown_education(sections_raw["教育背景"])}
+        )
+
+    if sections_raw.get("资格证书"):
+        data["sections"].append(
+            {
+                "heading": "资格证书",
+                "items": [strip_bullet_prefix(line) for line in sections_raw["资格证书"] if line.strip()],
+            }
+        )
+
+    return data
+
+
 def save_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -383,22 +638,29 @@ def add_centered_line(doc: Document, text: str, bold: bool = False, italic: bool
         return
     paragraph = doc.add_paragraph()
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0.5)
+    paragraph.paragraph_format.line_spacing = 1.02
     run = paragraph.add_run(text)
     run.bold = bold
     run.italic = italic
+    set_run_font(run, "Microsoft YaHei", 9.2)
 
 
 def add_bullet(doc: Document, text: str) -> None:
     paragraph = doc.add_paragraph(style="List Bullet")
-    paragraph.paragraph_format.space_after = Pt(0)
-    paragraph.add_run(text)
+    paragraph.paragraph_format.space_after = Pt(0.5)
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.line_spacing = 1.04
+    run = paragraph.add_run(text)
+    set_run_font(run, "Microsoft YaHei", 9.3)
 
 
 def add_section_heading(doc: Document, text: str) -> None:
     paragraph = doc.add_paragraph(text, style="Heading 1")
-    paragraph.paragraph_format.space_before = Pt(8)
-    paragraph.paragraph_format.space_after = Pt(4)
+    paragraph.paragraph_format.space_before = Pt(6)
+    paragraph.paragraph_format.space_after = Pt(3)
+    paragraph.paragraph_format.line_spacing = 1.03
 
 
 def add_role_header(doc: Document, item: dict[str, Any]) -> None:
@@ -412,14 +674,18 @@ def add_role_header(doc: Document, item: dict[str, Any]) -> None:
         return
 
     paragraph = doc.add_paragraph()
-    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.space_before = Pt(3)
+    paragraph.paragraph_format.space_after = Pt(0.5)
+    paragraph.paragraph_format.line_spacing = 1.03
     if right:
-        paragraph.paragraph_format.tab_stops.add_tab_stop(Cm(15.8), WD_TAB_ALIGNMENT.RIGHT)
+        paragraph.paragraph_format.tab_stops.add_tab_stop(Cm(17.0), WD_TAB_ALIGNMENT.RIGHT)
     if left:
         run = paragraph.add_run(left)
         run.bold = True
+        set_run_font(run, "Microsoft YaHei", 9.8)
     if right:
-        paragraph.add_run("\t" + right)
+        run = paragraph.add_run("\t" + right)
+        set_run_font(run, "Microsoft YaHei", 9.3)
 
 
 def add_secondary_line(doc: Document, item: dict[str, Any]) -> None:
@@ -428,17 +694,24 @@ def add_secondary_line(doc: Document, item: dict[str, Any]) -> None:
     if not line:
         return
     paragraph = doc.add_paragraph()
-    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0.5)
+    paragraph.paragraph_format.line_spacing = 1.02
     run = paragraph.add_run(line)
     run.italic = True
+    set_run_font(run, "Microsoft YaHei", 9.1)
 
 
 def add_labeled_line(doc: Document, label: str, value: str) -> None:
     paragraph = doc.add_paragraph()
-    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0.5)
+    paragraph.paragraph_format.line_spacing = 1.02
     lead = paragraph.add_run(f"{label}: ")
     lead.bold = True
-    paragraph.add_run(value)
+    set_run_font(lead, "Microsoft YaHei", 9.2)
+    run = paragraph.add_run(value)
+    set_run_font(run, "Microsoft YaHei", 9.2)
 
 
 def render_item(doc: Document, item: Any) -> None:
@@ -474,8 +747,11 @@ def render_item(doc: Document, item: Any) -> None:
 def render_resume(doc: Document, data: dict[str, Any]) -> None:
     title = doc.add_paragraph(style="Title")
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title.paragraph_format.space_after = Pt(0)
-    title.add_run(str(data.get("name") or "Candidate Name"))
+    title.paragraph_format.space_before = Pt(0)
+    title.paragraph_format.space_after = Pt(0.5)
+    title.paragraph_format.line_spacing = 1.02
+    run = title.add_run(str(data.get("name") or "Candidate Name"))
+    set_run_font(run, "Microsoft YaHei", 19.0)
 
     add_centered_line(doc, str(data.get("title") or "").strip(), italic=True)
 
@@ -1293,6 +1569,17 @@ def command_sample(output_path: Path | None) -> int:
     return 0
 
 
+def command_from_markdown(input_path: Path, output_path: Path) -> int:
+    data = parse_markdown_resume(input_path)
+    document = Document()
+    configure_document(document)
+    render_resume(document, data)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    document.save(output_path)
+    print(f"Created {output_path}")
+    return 0
+
+
 def command_inspect_template(input_path: Path, output_path: Path | None) -> int:
     payload = inspect_template_layout(input_path)
     rendered = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
@@ -1336,6 +1623,8 @@ def main() -> int:
         return command_extract(args.input, args.output)
     if args.command == "sample":
         return command_sample(args.output)
+    if args.command == "from-markdown":
+        return command_from_markdown(args.input, args.output)
     if args.command == "inspect-template":
         return command_inspect_template(args.input, args.output)
     if args.command == "fill-template":

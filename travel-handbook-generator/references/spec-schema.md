@@ -136,6 +136,7 @@ Optional:
 
 - `summary_boxes`
 - `hotel_card`
+- `hotel_options`
 
 ### `timeline`
 
@@ -158,6 +159,23 @@ Use:
 ```
 
 `hotel_key` must exist in `hotels`.
+
+### `hotel_options`
+
+Use:
+
+```json
+{
+  "card_title": "今晚可选酒店（3选）",
+  "hotel_keys": ["hotel_a", "hotel_b", "hotel_c"]
+}
+```
+
+Rules:
+
+- `hotel_keys` must all exist in `hotels`
+- each referenced hotel should contain `title`, `price`, `note`, and `page`
+- this section is best for “每天给 3 个住宿选择”这类手册
 
 ## 8. `budget`
 
