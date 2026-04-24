@@ -128,7 +128,7 @@ def merge_property_change_rows_for_display(rows: list[DiffRow]) -> list[DiffRow]
             category=first.category,
             change_type=first.change_type,
             object_id=first.object_id,
-            detail=" | ".join(detail_parts),
+            detail="；".join(detail_parts),
             prop_name=None,
             old_value=" | ".join(ov_parts),
             new_value=" | ".join(nv_parts),

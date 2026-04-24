@@ -44,6 +44,36 @@ _RISK_NOTE_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("网络", NET_CONNECTION): ("中", "连接变更，需核对确认"),
 }
 
+# 器件属性槽位 → (风险等级, 差异说明)，与产品判定表一致
+_COMPONENT_SLOT_RISK_NOTE: dict[str, tuple[str, str]] = {
+    "Value": ("中", "Value变更，影响电气特性"),
+    "料号": ("中", "物料变更，需核对"),
+    "描述": ("低", "器件描述变更，请检查"),
+    "型号": ("中", "型号变更，需核对"),
+    "品牌": ("低", "厂商变更，请检查"),
+    "封装": ("高", "封装变更，需核对 PCB"),
+    "贴装": ("高", "贴装变更，需核对 EBOM"),
+    "电压": ("高", "耐压变更，存在电气风险"),
+    "精度": ("高", "精度调整，影响电路性能"),
+    "功率": ("高", "功率变更，存在失效风险"),
+}
+
+_SLOT_DISPLAY_LABELS: frozenset[str] = frozenset(_COMPONENT_SLOT_RISK_NOTE.keys())
+
+
+def _risk_max(a: str, b: str) -> str:
+    rank = {"低": 0, "中": 1, "高": 2}
+    return a if rank.get(a, 1) >= rank.get(b, 1) else b
+
+
+def _risk_max_list(levels: list[str]) -> str:
+    if not levels:
+        return "中"
+    out = levels[0]
+    for x in levels[1:]:
+        out = _risk_max(out, x)
+    return out
+
 
 def _meta_full_path(raw: str) -> str:
     text = (raw or "").strip()
@@ -118,6 +148,13 @@ def _dsn_pair(row: DiffRow) -> tuple[str, str]:
         if kind == "pins":
             return ".".join(parts[:2]).strip(".") or "-", "-"
         return parts[0] if parts and parts[0] else "-", "-"
+    if row.change_type == NET_RENAME:
+        meta = row.meta or {}
+        if meta.get("csvNetRenamePinsPageValues"):
+            o = str(meta.get("renameFlatNetOld") or "").strip()
+            n = str(meta.get("renameFlatNetNew") or "").strip()
+            return o or "-", n or "-"
+        return str(row.old_value or "").strip() or "-", str(row.new_value or "").strip() or "-"
     if row.change_type == NET_CONNECTION:
         return parts[0] if parts and parts[0] else "-", parts[0] if parts and parts[0] else "-"
     if kind == "pins":
@@ -151,12 +188,115 @@ def _page_display(row: DiffRow) -> str:
     return _format_compare_table_cell(f"{left} | {right}")
 
 
+def _iter_part_prop_raw_headers(row: DiffRow) -> list[str]:
+    """Extract property header names from a merged component property row."""
+    pn = (row.prop_name or "").strip()
+    if pn:
+        return [pn]
+    out: list[str] = []
+    ov = str(row.old_value or "")
+    if " | " in ov:
+        for bit in ov.split(" | "):
+            bit = bit.strip()
+            if not bit:
+                continue
+            for sep in ("：", ":"):
+                if sep in bit:
+                    h = bit.split(sep, 1)[0].strip()
+                    if h:
+                        out.append(h)
+                    break
+        if out:
+            return out
+    det = str(row.detail or "")
+    for seg in det.split("；"):
+        seg = seg.strip()
+        if not seg or "→" not in seg:
+            continue
+        left = seg.split("→", 1)[0].strip()
+        sp = left.rfind(" ")
+        if sp > 0:
+            out.append(left[:sp].strip())
+        elif left:
+            out.append(left)
+    return out
+
+
 def _risk_level(row: DiffRow) -> str:
-    return _RISK_NOTE_MAP.get((row.category, row.change_type), ("中", ""))[0]
+    r, _n = _auto_risk_and_diff_note(row)
+    return r
 
 
 def _diff_note(row: DiffRow) -> str:
-    return _RISK_NOTE_MAP.get((row.category, row.change_type), ("中", ""))[1]
+    _r, n = _auto_risk_and_diff_note(row)
+    return n
+
+
+def _auto_risk_and_diff_note(row: DiffRow) -> tuple[str, str]:
+    """Per-slot risk assessment matching source tool's _auto_risk_and_diff_note."""
+    c = (row.category or "").strip()
+    t = (row.change_type or "").strip()
+
+    if c == "器件" and t == COMPONENT_PROP:
+        risks: list[str] = []
+        notes: list[str] = []
+        seen_note: set[str] = set()
+        for raw_h in _iter_part_prop_raw_headers(row):
+            lab = (raw_h or "").strip()
+            if lab in _COMPONENT_SLOT_RISK_NOTE:
+                rk, msg = _COMPONENT_SLOT_RISK_NOTE[lab]
+                risks.append(rk)
+                if msg not in seen_note:
+                    seen_note.add(msg)
+                    notes.append(msg)
+            else:
+                risks.append("中")
+                msg = "器件属性变更，请核对"
+                if msg not in seen_note:
+                    seen_note.add(msg)
+                    notes.append(msg)
+        if not risks:
+            return "中", "器件属性变更，请核对"
+        return _risk_max_list(risks), "；".join(notes)
+
+    if c == "管脚" and t == PIN_INFO:
+        pl = _pin_table_label_for_risk(row)
+        has_pin = "脚名" in pl
+        has_net = "网名" in pl
+        rs: list[str] = []
+        ns: list[str] = []
+        if has_pin:
+            rs.append("低")
+            ns.append("仅名称调整，无功能影响")
+        if has_net:
+            rs.append("中")
+            ns.append("请检查是否有掉网络")
+        if rs:
+            return _risk_max_list(rs), "；".join(ns)
+        return "中", "管脚属性变更，请核对"
+
+    return _RISK_NOTE_MAP.get((c, t), ("中", ""))
+
+
+def _pin_table_label_for_risk(row: DiffRow) -> str:
+    """Get pin property display labels for risk assessment."""
+    pn = (row.prop_name or "").strip()
+    if pn:
+        return _value_label("管脚", pn)
+    ov = str(row.old_value or "")
+    if " | " in ov:
+        labs: list[str] = []
+        for bit in ov.split(" | "):
+            bit = bit.strip()
+            for sep in ("：", ":"):
+                if sep in bit:
+                    h = bit.split(sep, 1)[0].strip()
+                    if h:
+                        labs.append(_value_label("管脚", h))
+                    break
+        if labs:
+            return "|".join(labs)
+    return ""
 
 
 def _value_label(category: str, prop_name: str | None) -> str:
@@ -200,6 +340,13 @@ def _old_new_values(row: DiffRow) -> tuple[str, str]:
     old_value = str(row.old_value or "")
     new_value = str(row.new_value or "")
     if row.change_type == NET_RENAME and row.category == "网络":
+        meta = row.meta or {}
+        if meta.get("csvNetRenamePinsPageValues"):
+            pn = str(meta.get("renamePinsPagePropName") or "Pins (Page)").strip()
+            label = _value_label(row.category, pn)
+            old_text = _format_compare_table_cell(f"{label}：{old_value if old_value else ' '}")
+            new_text = _format_compare_table_cell(f"{label}：{new_value if new_value else ' '}")
+            return old_text or " ", new_text or " "
         label = _value_label(row.category, row.prop_name or "Pins (Page)")
         old_text = _format_compare_table_cell(f"{label}：{old_value if old_value else ' '}")
         new_text = _format_compare_table_cell(f"{label}：{new_value if new_value else ' '}")
@@ -212,12 +359,30 @@ def _old_new_values(row: DiffRow) -> tuple[str, str]:
         return old_text or " ", new_text or " "
     if row.category in ("管脚", "网络") and row.change_type in PROPERTY_STYLE_TYPES and row.prop_name:
         label = _value_label(row.category, row.prop_name)
-        old_text = _format_compare_table_cell(f"{label}：{old_value if old_value else ' '}")
-        new_text = _format_compare_table_cell(f"{label}：{new_value if new_value else ' '}")
+        ov = old_value.strip()
+        nv = new_value.strip()
+        old_text = _format_compare_table_cell(f"{label}：{ov}" if ov and ov not in ("-", "—", "–") else " ")
+        new_text = _format_compare_table_cell(f"{label}：{nv}" if nv and nv not in ("-", "—", "–") else " ")
         return old_text or " ", new_text or " "
     old_text = _format_compare_table_cell(old_value)
     new_text = _format_compare_table_cell(new_value)
     return old_text or " ", new_text or " "
+
+
+def _normalize_detail_display(raw: str) -> str:
+    """Normalize detail column: convert English column names to Chinese, apply display rules."""
+    import re
+    s = raw
+    s = re.sub(r"(?i)Pins\s*\(\s*Page\s*\)", "Pins", s)
+    s = s.replace("Pins（Page）", "Pins").replace("Pins（page）", "Pins")
+    s = re.sub(r"(?i)Net\s+Name", "网名", s)
+    s = re.sub(r"(?i)Pin\s+Name", "脚名", s)
+    # Deduplicate rename description
+    s = re.sub(
+        r"(网络.+?→.+?，Pins不变)\s*[；：]\s*(?:Flat\s*Net|FlatNet|网名)\s+.+$",
+        r"\1", s, count=1, flags=re.I | re.M,
+    )
+    return s
 
 
 def _detail_display(row: DiffRow) -> str:
@@ -229,8 +394,8 @@ def _detail_display(row: DiffRow) -> str:
             str(row.old_value or ""), str(row.new_value or "")
         )
         detail = _nets_pins_connection_detail_cn(old_value, new_value)
-        return _format_compare_table_cell(detail)
-    return _format_compare_table_cell(raw)
+        return _normalize_detail_display(_format_compare_table_cell(detail))
+    return _normalize_detail_display(_format_compare_table_cell(raw))
 
 
 def export_markdown(

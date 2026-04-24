@@ -327,9 +327,11 @@ def _pin_snapshot_line(row: list[str], headers: list[str]) -> str:
     bits = [
         f"Reference：{refdes}",
         f"Pin Number：{pin}",
-        f"脚名：{pin_name}",
-        f"网名：{net_name}",
     ]
+    if pin_name.strip():
+        bits.append(f"脚名：{pin_name}")
+    if net_name.strip():
+        bits.append(f"网名：{net_name}")
     return " | ".join(bits)
 
 
@@ -698,36 +700,122 @@ def compare_nets_csv_pair(
                     )
                 )
             continue
-        if old_row is not None:
-            old_snapshot = _nets_single_row_pins_snapshot(old_row, pairs, headers_old)
+
+        # --- Rename detection: pair deleted+added nets with identical pin sets ---
+        if old_row is not None and new_row is None:
+            # Collect only-old entries for later rename pairing
+            pass
+        if new_row is not None and old_row is None:
+            # Collect only-new entries for later rename pairing
+            pass
+
+    # Separate only-old and only-new keys for rename pairing
+    only_old_keys = [k for k in sorted(set(old_map) | set(new_map), key=str.casefold)
+                     if k in old_map and k not in new_map]
+    only_new_keys = [k for k in sorted(set(old_map) | set(new_map), key=str.casefold)
+                     if k in new_map and k not in old_map]
+
+    # Build pin-token signature for rename pairing
+    def _pin_sig_from_row(row: list[str], is_new: bool) -> frozenset[str]:
+        tokens = set()
+        for _label, idx_o, idx_n in pairs or []:
+            idx = idx_n if is_new else idx_o
+            if idx >= 0:
+                for tok in _nets_tokenize_pin_like_list(_cell(row, idx)):
+                    if tok and tok not in ("-", "—", "–"):
+                        tokens.add(tok.casefold())
+        return frozenset(tokens)
+
+    old_by_sig: dict[frozenset[str], list[str]] = defaultdict(list)
+    new_by_sig: dict[frozenset[str], list[str]] = defaultdict(list)
+    for k in only_old_keys:
+        sig = _pin_sig_from_row(old_map[k], False)
+        if sig:
+            old_by_sig[sig].append(k)
+    for k in only_new_keys:
+        sig = _pin_sig_from_row(new_map[k], True)
+        if sig:
+            new_by_sig[sig].append(k)
+
+    paired_old: set[str] = set()
+    paired_new: set[str] = set()
+
+    from .diff_types import NET_RENAME
+
+    for sig, old_list in old_by_sig.items():
+        new_list = new_by_sig.get(sig, [])
+        if not new_list:
+            continue
+        old_sorted = sorted(old_list, key=str.casefold)
+        new_sorted = sorted(new_list, key=str.casefold)
+        for ok, nk in zip(old_sorted, new_sorted):
+            old_name = _net_name_from_key(ok)
+            new_name = _net_name_from_key(nk)
+            if old_name.casefold() == new_name.casefold():
+                continue
+            paired_old.add(ok)
+            paired_new.add(nk)
+            old_row_r = old_map[ok]
+            new_row_r = new_map[nk]
+            pins_snapshot = _nets_single_row_pins_snapshot(old_row_r, pairs, headers_old)
             if sort_pin_snapshots:
-                old_snapshot = _normalize_pin_list(old_snapshot)
+                pins_snapshot = _normalize_pin_list(pins_snapshot)
+            meta = _csv_row_location_meta(headers_old, old_row_r, headers_new, new_row_r)
+            meta["renameFlatNetOld"] = old_name
+            meta["renameFlatNetNew"] = new_name
+            meta["csvNetRenamePinsPageValues"] = "1"
+            meta["renamePinsPagePropName"] = "Pins (Page)"
             rows.append(
                 DiffRow(
                     category="网络",
-                    change_type=DELETE,
-                    object_id=f"[Nets] {key}",
-                    detail=f"删除{_net_name_from_key(key)}",
-                    old_value=old_snapshot,
-                    new_value="",
-                    meta=_csv_row_location_meta(headers_old, old_row, headers_new, None),
+                    change_type=NET_RENAME,
+                    object_id=f"[Nets] {new_name}",
+                    detail=f"网络{old_name}→{new_name}，Pins不变",
+                    prop_name="Pins (Page)",
+                    old_value=pins_snapshot,
+                    new_value=pins_snapshot,
+                    meta=meta,
                 )
             )
-        if new_row is not None:
-            new_snapshot = _nets_single_row_pins_snapshot(new_row, pairs, headers_new)
-            if sort_pin_snapshots:
-                new_snapshot = _normalize_pin_list(new_snapshot)
-            rows.append(
-                DiffRow(
-                    category="网络",
-                    change_type=ADD,
-                    object_id=f"[Nets] {key}",
-                    detail=f"新增{_net_name_from_key(key)}",
-                    old_value="",
-                    new_value=new_snapshot,
-                    meta=_csv_row_location_meta(headers_old, None, headers_new, new_row),
-                )
+
+    # Emit remaining delete/add for unpaired nets
+    for key in only_old_keys:
+        if key in paired_old:
+            continue
+        old_row = old_map[key]
+        old_snapshot = _nets_single_row_pins_snapshot(old_row, pairs, headers_old)
+        if sort_pin_snapshots:
+            old_snapshot = _normalize_pin_list(old_snapshot)
+        rows.append(
+            DiffRow(
+                category="网络",
+                change_type=DELETE,
+                object_id=f"[Nets] {key}",
+                detail=f"删除{_net_name_from_key(key)}",
+                old_value=old_snapshot,
+                new_value="",
+                meta=_csv_row_location_meta(headers_old, old_row, headers_new, None),
             )
+        )
+
+    for key in only_new_keys:
+        if key in paired_new:
+            continue
+        new_row = new_map[key]
+        new_snapshot = _nets_single_row_pins_snapshot(new_row, pairs, headers_new)
+        if sort_pin_snapshots:
+            new_snapshot = _normalize_pin_list(new_snapshot)
+        rows.append(
+            DiffRow(
+                category="网络",
+                change_type=ADD,
+                object_id=f"[Nets] {key}",
+                detail=f"新增{_net_name_from_key(key)}",
+                old_value="",
+                new_value=new_snapshot,
+                meta=_csv_row_location_meta(headers_old, None, headers_new, new_row),
+            )
+        )
     return rows
 
 
@@ -838,6 +926,117 @@ def suppress_net_connection_pins_for_refdes_renumber(rows: list[DiffRow]) -> lis
     return out
 
 
+def coalesce_net_add_connection_to_rename(rows: list[DiffRow]) -> list[DiffRow]:
+    """
+    Post-processor: merge 'add net' + 'connection change' into 'rename' when
+    the added net's pin set exactly matches the removed pins from a connection change.
+    This matches the source tool's coalesce_net_add_connection_to_rename logic.
+    """
+    from .diff_types import NET_RENAME, NET_CONNECTION
+
+    add_entries: list[tuple[int, DiffRow, str, set[str]]] = []
+    for i, r in enumerate(rows):
+        if r.category != "网络" or r.change_type != ADD:
+            continue
+        kind, rk = parse_csv_diff_object_id(r.object_id)
+        if kind != "nets" or not rk:
+            continue
+        new_val = str(r.new_value or "").strip()
+        if not new_val or new_val == "-":
+            continue
+        pins = {tok.casefold() for tok in _nets_tokenize_pin_like_list(new_val)
+                if tok.strip() and tok.strip() not in ("-", "—", "–")}
+        if not pins:
+            continue
+        new_flat = _net_name_from_key(rk).strip() or rk.strip()
+        add_entries.append((i, r, new_flat, pins))
+
+    conn_by_oid: dict[str, list[tuple[int, DiffRow]]] = defaultdict(list)
+    for i, r in enumerate(rows):
+        if r.category != "网络" or r.change_type != NET_CONNECTION:
+            continue
+        kind, _rk = parse_csv_diff_object_id(r.object_id)
+        if kind != "nets":
+            continue
+        conn_by_oid[r.object_id].append((i, r))
+
+    if not add_entries or not conn_by_oid:
+        return rows
+
+    used_add: set[int] = set()
+    used_oid: set[str] = set()
+    synthesized: list[DiffRow] = []
+
+    for ai, r_add, new_name, pins_add in add_entries:
+        if ai in used_add:
+            continue
+        best_oid: str | None = None
+        best_meta: dict[str, Any] = {}
+        best_old_name = ""
+        for oid, lst in sorted(conn_by_oid.items(), key=lambda x: x[0]):
+            if oid in used_oid:
+                continue
+            kind, old_rk = parse_csv_diff_object_id(oid)
+            if kind != "nets" or not old_rk:
+                continue
+            old_name = _net_name_from_key(old_rk).strip() or old_rk.strip()
+            removed: set[str] = set()
+            meta_conn: dict[str, Any] = {}
+            for _j, rc in lst:
+                meta_conn = dict(rc.meta) if rc.meta else meta_conn
+                for tok in _nets_tokenize_pin_like_list(str(rc.old_value or "")):
+                    if tok.strip() and tok.strip() not in ("-", "—", "–"):
+                        removed.add(tok.casefold())
+            if removed != pins_add or not pins_add:
+                continue
+            best_oid = oid
+            best_meta = meta_conn
+            best_old_name = old_name
+            break
+        if best_oid is None:
+            continue
+        used_add.add(ai)
+        used_oid.add(best_oid)
+        merged_meta = dict(best_meta)
+        m_add = r_add.meta or {}
+        for k2 in ("schematicNameDsn2", "pageNameDsn2"):
+            v2 = str(m_add.get(k2) or "").strip()
+            if v2:
+                merged_meta[k2] = v2
+        pins_disp = ", ".join(sorted(pins_add, key=str.lower))
+        merged_meta["renameFlatNetOld"] = best_old_name
+        merged_meta["renameFlatNetNew"] = new_name
+        merged_meta["csvNetRenamePinsPageValues"] = "1"
+        merged_meta["renamePinsPagePropName"] = "Pins (Page)"
+        synthesized.append(
+            DiffRow(
+                category="网络",
+                change_type=NET_RENAME,
+                object_id=f"[Nets] {new_name}",
+                detail=f"网络{best_old_name}→{new_name}，Pins不变",
+                prop_name="Pins (Page)",
+                old_value=pins_disp,
+                new_value=pins_disp,
+                meta=merged_meta,
+            )
+        )
+
+    if not used_add and not used_oid:
+        return rows
+
+    out: list[DiffRow] = []
+    used_conn_indices: set[int] = set()
+    for oid in used_oid:
+        for idx, _r in conn_by_oid[oid]:
+            used_conn_indices.add(idx)
+    for i, r in enumerate(rows):
+        if i in used_add or i in used_conn_indices:
+            continue
+        out.append(r)
+    out.extend(synthesized)
+    return out
+
+
 def compare_csv_pair(
     path_old: Path,
     path_new: Path,
@@ -928,6 +1127,7 @@ def compare_all_dsn_csvs_from_prefs(prefs: dict[str, Any]) -> tuple[list[DiffRow
             )
     rows = suppress_pin_add_delete_for_refdes_renumber(rows)
     rows = suppress_net_connection_pins_for_refdes_renumber(rows)
+    rows = coalesce_net_add_connection_to_rename(rows)
     return rows, None
 
 
@@ -950,12 +1150,12 @@ def build_default_compare_prefs(
         "lastDsn2NetsCsv": str(nets2),
         "pinsCsvColumnCompare": [
             {"on": True, "d1": "Pin Name", "d2": "Pin Name"},
-            {"on": False, "d1": "Net Name", "d2": "Net Name"},
+            {"on": True, "d1": "Net Name", "d2": "Net Name"},
         ],
         "netsCsvColumnCompare": [
             {"on": True, "d1": "Pins (Page)", "d2": "Pins (Page)"},
         ],
-        "pinsAddDeleteFullSnapshot": mode in ("edif", "dsn"),
+        "pinsAddDeleteFullSnapshot": True,
         "sortNetworkPinSnapshots": mode in ("edif", "dsn"),
     }
 
